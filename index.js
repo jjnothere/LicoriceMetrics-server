@@ -467,9 +467,7 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
 
 // New route to check for changes for a specific user and ad account
 app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
-  console.log("NANI")
   const { userId, adAccountId } = req.body;
-  console.log("🐒 ~ req.body:", req.body)
 
   if (!userId || !adAccountId) {
     return res.status(400).json({ message: 'User ID and Ad Account ID are required' });

@@ -304,6 +304,7 @@ app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
 // New route to fetch LinkedIn chart data
 app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
   const { start, end, campaigns, accountId, fields } = req.query;
+  console.log("🐒 ~ req.query:", req.query)
 
   if (!accountId) {
     return res.status(400).json({ error: 'Account ID is required' });
@@ -320,12 +321,17 @@ app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid account ID for this user' });
   }
 
-  // Call LinkedIn API with the specific account ID
-  let url = `https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:${startDate.getFullYear()},month:${startDate.getMonth() + 1},day:${startDate.getDate()}),end:(year:${endDate.getFullYear()},month:${endDate.getMonth() + 1},day:${endDate.getDate()}))&timeGranularity=DAILY&pivot=CAMPAIGN&accounts=List(urn%3Ali%3AsponsoredAccount%3A${userAdAccountID})&fields=dateRange,${fields}`;
-
-  if (campaigns) {
-    url += `&campaigns=${campaigns}`;
+  // Format campaigns array
+  let campaignsParam = '';
+  if (Array.isArray(campaigns)) {
+    const campaignList = campaigns.map(campaignId => `urn%3Ali%3AsponsoredCampaign%3A${campaignId}`).join(',');
+    campaignsParam = `&campaigns=List(${campaignList})`;
   }
+
+  // Call LinkedIn API with the specific account ID
+  let url = `https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:${startDate.getFullYear()},month:${startDate.getMonth() + 1},day:${startDate.getDate()}),end:(year:${endDate.getFullYear()},month:${endDate.getMonth() + 1},day:${endDate.getDate()}))&timeGranularity=DAILY&pivot=CAMPAIGN&accounts=List(urn%3Ali%3AsponsoredAccount%3A${userAdAccountID})&fields=dateRange,${fields}${campaignsParam}`;
+
+  console.log("🐒 ~ url:", url)
 
   try {
     const response = await axios.get(url, {
@@ -525,6 +531,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
         }
 
         const difference = {
+          campaignId: campaign2.id,
           campaign: campaign2.name,
           date: formatDate(new Date()),
           changes,
@@ -535,6 +542,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
       } else if (!campaign1) {
         // New campaign
         newDifferences.push({
+          campaignId: campaign2.id,
           campaign: campaign2.name,
           date: formatDate(new Date()),
           changes: { message: 'New campaign added' },
@@ -559,6 +567,62 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error in checking changes for user and ad account:', error);
     res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (req, res) => {
+  const { accountId } = req.query;
+
+  if (!accountId) {
+    return res.status(400).json({ error: 'Account ID is required' });
+  }
+
+  try {
+    const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+
+    if (!user || !user.accessToken) {
+      return res.status(404).json({ error: 'User or access token not found' });
+    }
+
+    const token = user.accessToken;
+    const userAdAccountID = accountId.split(':').pop();
+
+    const campaignGroupsUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaignGroups?q=search&sortOrder=DESCENDING`;
+    const campaignsUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
+
+    const [groupsResponse, campaignsResponse] = await Promise.all([
+      axios.get(campaignGroupsUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-RestLi-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202406',
+        },
+      }),
+      axios.get(campaignsUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-RestLi-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202406',
+        },
+      }),
+    ]);
+
+    // Log the campaigns response data
+    const campaigns = campaignsResponse.data.elements || [];
+    const campaignGroups = groupsResponse.data.elements.map(group => ({
+      ...group,
+      campaigns: campaigns.filter(campaign => {
+        // Extract the numeric ID from the URN string
+        const campaignGroupId = campaign.campaignGroup.split(':').pop();
+        return campaignGroupId === String(group.id); // Compare as strings
+      }),
+      visible: false,
+    }));
+
+    res.json(campaignGroups);
+  } catch (error) {
+    console.error('Error fetching ad campaign groups or campaigns:', error);
+    res.status(500).send('Error fetching ad campaign groups or campaigns');
   }
 });
 

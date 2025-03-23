@@ -304,7 +304,6 @@ app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
 // New route to fetch LinkedIn chart data
 app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
   const { start, end, campaigns, accountId, fields } = req.query;
-  console.log("🐒 ~ req.query:", req.query)
 
   if (!accountId) {
     return res.status(400).json({ error: 'Account ID is required' });
@@ -330,8 +329,6 @@ app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
 
   // Call LinkedIn API with the specific account ID
   let url = `https://api.linkedin.com/rest/adAnalytics?q=analytics&dateRange=(start:(year:${startDate.getFullYear()},month:${startDate.getMonth() + 1},day:${startDate.getDate()}),end:(year:${endDate.getFullYear()},month:${endDate.getMonth() + 1},day:${endDate.getDate()}))&timeGranularity=DAILY&pivot=CAMPAIGN&accounts=List(urn%3Ali%3AsponsoredAccount%3A${userAdAccountID})&fields=dateRange,${fields}${campaignsParam}`;
-
-  console.log("🐒 ~ url:", url)
 
   try {
     const response = await axios.get(url, {
@@ -791,9 +788,7 @@ async function fetchAdCampaigns(userId, accessToken, accountIds) {
 
     const campaignsApiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
 
-    let campaignsWithCreatives = [];
-    let existingCampaignGroups = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaignGroups || [];
-    let existingBudget = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.budget || null;
+    let campaignsWithCreatives = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [];
 
     try {
       // Fetch ad campaigns
@@ -881,8 +876,8 @@ async function fetchAdCampaigns(userId, accessToken, accountIds) {
     // Store fetched data or fallback data
     adCampaigns[accountId] = {
       campaigns: campaignsWithCreatives,
-      campaignGroups: existingCampaignGroups,
-      budget: existingBudget,
+      campaignGroups: existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaignGroups || [],
+      budget: existingAdCampaignsDoc?.adCampaigns?.[accountId]?.budget || null,
     };
   }
 
@@ -1021,17 +1016,49 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
           return map;
         }, {});
 
-        // Check for changes in `isServing` property
+        // Check for changes in `isServing` property and content
         for (const creativeId in creativeMap1) {
-          if (
-            creativeMap2[creativeId] &&
-            creativeMap1[creativeId].isServing !== creativeMap2[creativeId].isServing
-          ) {
-            const name = creativeMap2[creativeId].name || 'Unnamed Creative';
-            const newState = creativeMap2[creativeId].isServing;
+          if (creativeMap2[creativeId]) {
+            const creative1 = creativeMap1[creativeId];
+            const creative2 = creativeMap2[creativeId];
+
+            if (creative1.isServing !== creative2.isServing) {
+              const name = creative2.name || 'Unnamed Creative';
+              const newState = creative2.isServing;
+              creativeDiffs.push({
+                name,
+                isServing: newState ? 'Set to: true' : 'Set to: false',
+              });
+            }
+
+            if (JSON.stringify(creative1.content) !== JSON.stringify(creative2.content)) {
+              creativeDiffs.push({
+                name: creative2.name || 'Unnamed Creative',
+                content: {
+                  oldValue: creative1.content,
+                  newValue: creative2.content,
+                },
+              });
+            }
+          }
+        }
+
+        // Check for added creatives
+        for (const creativeId in creativeMap2) {
+          if (!creativeMap1[creativeId]) {
             creativeDiffs.push({
-              name,
-              isServing: newState ? 'Set to: true' : 'Set to: false',
+              name: creativeMap2[creativeId].name || 'Unnamed Creative',
+              added: true,
+            });
+          }
+        }
+
+        // Check for removed creatives
+        for (const creativeId in creativeMap1) {
+          if (!creativeMap2[creativeId]) {
+            creativeDiffs.push({
+              name: creativeMap1[creativeId].name || 'Unnamed Creative',
+              removed: true,
             });
           }
         }

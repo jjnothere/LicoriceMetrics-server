@@ -22,7 +22,9 @@ app.use(cookieParser());
 
 // Configure CORS
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' ? process.env.FRONTEND_URL_PROD : process.env.FRONTEND_URL_DEV,
+  origin: process.env.NODE_ENV === 'production' 
+    ? process.env.FRONTEND_URL_PROD 
+    : process.env.FRONTEND_URL_DEV,
   credentials: true, // allows sending cookies and auth headers
 }));
 

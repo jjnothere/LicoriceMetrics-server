@@ -56,6 +56,8 @@ const callbackURL = process.env.NODE_ENV === 'production'
   ? process.env.CALLBACK_URL_PROD
   : process.env.CALLBACK_URL_DEV;
 
+console.log(`Using LinkedIn callback URL: ${callbackURL}`); // Debug log
+
 passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,

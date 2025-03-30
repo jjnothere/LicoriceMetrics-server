@@ -63,15 +63,17 @@ passport.use(new LinkedInStrategy({
   return done(null, { profile, accessToken, refreshToken });
 }));
 
-// Serve static files from the Vue app's build directory
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-app.use(express.static(path.join(__dirname, '../public')));
+if (process.env.NODE_ENV === 'production') {
+  // Serve static files from the Vue app's build directory
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  app.use(express.static(path.join(__dirname, '../public')));
 
-// Default route to serve the frontend
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
-});
+  // Default route to serve the frontend
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+  });
+}
 
 // LinkedIn authentication route
 app.get('/auth/linkedin', (req, res, next) => {

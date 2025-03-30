@@ -60,6 +60,11 @@ passport.use(new LinkedInStrategy({
   return done(null, { profile, accessToken, refreshToken });
 }));
 
+// Serve static files from the Vue app's build directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, '../public')));
+
 // LinkedIn authentication route
 app.get('/auth/linkedin', (req, res, next) => {
   next();

@@ -176,9 +176,9 @@ app.get('/auth/linkedin/callback',
       }
 
     } catch (error) {
-      console.error('Error in LinkedIn callback:', error);
+      console.error('Error in LinkedIn callback:', error); // Log the error
       if (!res.headersSent) {
-        res.status(500).json({ message: 'Internal Server Error' });
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
       }
     }
   }

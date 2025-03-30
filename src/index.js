@@ -651,6 +651,10 @@ app.get('/api/hello', (req, res) => {
 });
 
 app.listen(PORT, () => {
+  console.log("🐒 ~ PORT:", PORT)
+  console.log(`🐒Application running in ${process.env.NODE_ENV} mode`);
+  console.log(`🐒Using LinkedIn callback URL: ${callbackURL}`);
+  console.log(`🐒Frontend URL: ${process.env.NODE_ENV === 'production' ? process.env.FRONTEND_URL_PROD : process.env.FRONTEND_URL_DEV}`);
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 

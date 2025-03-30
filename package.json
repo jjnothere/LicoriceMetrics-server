@@ -1,6 +1,7 @@
 {
+  "type": "module",
   "scripts": {
-    "dev": "nodemon index.js"
+    "dev": "nodemon src/index.js"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"

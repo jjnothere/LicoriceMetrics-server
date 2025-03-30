@@ -66,6 +66,7 @@ passport.use(new LinkedInStrategy({
 }));
 
 if (process.env.NODE_ENV === 'production') {
+  console.log('🐒🐒🐒🐒🐒🐒🐒🐒🐒🐒Production mode: Serving static files from Vue app');
   // Serve static files from the Vue app's build directory
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);

@@ -85,6 +85,9 @@ app.get('/auth/linkedin/callback',
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
     try {
+      console.log('LinkedIn callback triggered');
+      console.log('User object:', req.user);
+
       const { accessToken, profile } = req.user;
 
       if (!accessToken) {

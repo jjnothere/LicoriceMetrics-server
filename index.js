@@ -73,6 +73,11 @@ app.get('/', (req, res) => {
   res.send('Welcome to the Licorice Metrics API!');
 });
 
+// Default route to serve the frontend
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
 // LinkedIn authentication route
 app.get('/auth/linkedin', (req, res, next) => {
   next();

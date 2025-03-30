@@ -68,14 +68,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Default route for "/"
-app.get('/', (req, res) => {
-  res.send('Welcome to the Licorice Metrics API!');
-});
-
 // Default route to serve the frontend
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, './public/index.html'));
+  res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
 // LinkedIn authentication route

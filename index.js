@@ -1,14 +1,17 @@
-const { MongoClient, ObjectId } = require('mongodb');
-const express = require('express');
-const passport = require('passport');
-const LinkedInStrategy = require('passport-linkedin-oauth2').Strategy;
-const dotenv = require('dotenv');
-const session = require('express-session');
-const cookieParser = require('cookie-parser');
-const axios = require('axios');
-const jwt = require('jsonwebtoken'); // Add this line
-const cors = require('cors'); // Add this line
-const cron = require('node-cron');
+import { MongoClient, ObjectId } from 'mongodb';
+import express from 'express';
+import passport from 'passport';
+import { Strategy as LinkedInStrategy } from 'passport-linkedin-oauth2';
+import dotenv from 'dotenv';
+import session from 'express-session';
+import cookieParser from 'cookie-parser';
+import axios from 'axios';
+import jwt from 'jsonwebtoken';
+import cors from 'cors';
+import cron from 'node-cron';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
 const app = express();
 const PORT = process.env.PORT || 8000;
 

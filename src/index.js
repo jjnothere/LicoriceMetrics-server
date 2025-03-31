@@ -95,11 +95,17 @@ if (process.env.NODE_ENV === 'production') {
 
 // LinkedIn authentication route
 app.get('/auth/linkedin', (req, res, next) => {
+  console.log('🐒 LinkedIn authentication route hit');
+  console.log('🐒 Redirecting to LinkedIn for authentication...');
   next();
 }, passport.authenticate('linkedin'));
 
 // LinkedIn callback route
 app.get('/auth/linkedin/callback',
+  (req, res, next) => {
+    console.log('🐒 LinkedIn callback route hit');
+    next();
+  },
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
     try {

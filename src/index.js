@@ -71,12 +71,24 @@ const callbackURL = process.env.NODE_ENV === 'production'
 
 console.log(`Using LinkedIn callback URL: ${callbackURL}`); // Debug log
 
+// Add logs to confirm environment variables are loaded
+if (!process.env.LINKEDIN_CLIENT_ID || !process.env.LINKEDIN_CLIENT_SECRET || !callbackURL) {
+  console.error('🐒 Missing LinkedIn environment variables. Check LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, and CALLBACK_URL.');
+} else {
+  console.log('🐒 LinkedIn environment variables loaded successfully.');
+}
+
+// Add detailed logging to LinkedIn strategy
 passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
   callbackURL: callbackURL,
   scope: ['r_ads_reporting', 'r_ads', 'r_basicprofile', 'r_organization_social'],
 }, (accessToken, refreshToken, profile, done) => {
+  console.log('🐒 LinkedIn Strategy invoked.');
+  console.log('🐒 Access Token:', accessToken);
+  console.log('🐒 Refresh Token:', refreshToken);
+  console.log('🐒 Profile:', profile);
   return done(null, { profile, accessToken, refreshToken });
 }));
 
@@ -103,15 +115,13 @@ app.get('/auth/linkedin', (req, res, next) => {
 // LinkedIn callback route
 app.get('/auth/linkedin/callback',
   (req, res, next) => {
-    console.log('🐒 LinkedIn callback route hit');
+    console.log('🐒 LinkedIn callback route hit. Query params:', req.query);
     next();
   },
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
     try {
-      console.log('🐒 LinkedIn callback triggered');
-      console.log('🐒 User object received from LinkedIn:', req.user);
-
+      console.log('🐒 LinkedIn callback triggered. User:', req.user);
       const { accessToken, profile } = req.user;
 
       if (!accessToken) {

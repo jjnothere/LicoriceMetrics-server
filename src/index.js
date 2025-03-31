@@ -40,6 +40,17 @@ app.use(session({
   }),
 }));
 
+// Add logging to confirm session store is working
+app.use((req, res, next) => {
+  if (req.session) {
+    console.log('🐒 Session ID:', req.session.id);
+    console.log('🐒 Session data:', req.session);
+  } else {
+    console.warn('🐒 No session found');
+  }
+  next();
+});
+
 // Trust Heroku proxy to preserve protocol
 app.set('trust proxy', 1);
 
@@ -126,6 +137,9 @@ app.get('/auth/linkedin', (req, res, next) => {
 app.get('/auth/linkedin/callback',
   (req, res, next) => {
     console.log('🐒 LinkedIn callback route hit. Query params:', req.query);
+    if (!req.query.code) {
+      console.error('🐒 Error: Missing authorization code in query params');
+    }
     try {
       next();
     } catch (error) {

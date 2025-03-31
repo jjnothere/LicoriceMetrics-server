@@ -90,13 +90,13 @@ app.get('/auth/linkedin/callback',
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
     try {
-      console.log('LinkedIn callback triggered');
-      console.log('User object:', req.user);
+      console.log('🐒 LinkedIn callback triggered');
+      console.log('🐒 User object received from LinkedIn:', req.user);
 
       const { accessToken, profile } = req.user;
 
       if (!accessToken) {
-        console.error('Error: Access token not found');
+        console.error('🐒 Error: Access token not found');
         return res.status(400).json({ error: 'Access token not found' });
       }
 
@@ -106,6 +106,8 @@ app.get('/auth/linkedin/callback',
       const linkedinId = profile.id;
       const firstName = profile.name.givenName;
       const lastName = profile.name.familyName;
+
+      console.log('🐒 LinkedIn profile:', { linkedinId, firstName, lastName });
 
       const adAccountsUrl = `https://api.linkedin.com/rest/adAccountUsers?q=authenticatedUser`;
       const adAccountsResponse = await axios.get(adAccountsUrl, {
@@ -121,10 +123,13 @@ app.get('/auth/linkedin/callback',
         role: account.role,
       }));
 
+      console.log('🐒 Ad accounts fetched:', adAccounts);
+
       const existingUser = await usersCollection.findOne({ linkedinId });
       let user;
 
       if (existingUser) {
+        console.log('🐒 Existing user found, updating...');
         await usersCollection.updateOne(
           { linkedinId },
           {
@@ -139,6 +144,7 @@ app.get('/auth/linkedin/callback',
         );
         user = existingUser;
       } else {
+        console.log('🐒 New user, creating...');
         const newUser = {
           linkedinId,
           accessToken,
@@ -165,18 +171,22 @@ app.get('/auth/linkedin/callback',
       );
       await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
 
+      console.log('🐒 JWT tokens generated:', { jwtAccessToken, refreshToken });
+
       // Set the tokens in cookies
       res.cookie('accessToken', jwtAccessToken, {
-        maxAge: 2 * 60 * 60 * 1000, // 2 hour
+        maxAge: 2 * 60 * 60 * 1000, // 2 hours
       });
       res.cookie('refreshToken', refreshToken, {
         path: '/',
-        maxAge: 7 * 24 * 60 * 60 * 1000
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       });
 
       const frontendUrl = process.env.NODE_ENV === 'production'
         ? process.env.FRONTEND_URL_PROD
         : process.env.FRONTEND_URL_DEV;
+
+      console.log('🐒 Redirecting to frontend:', `${frontendUrl}/history`);
 
       // Redirect to the frontend history page after successful login
       if (!res.headersSent) {
@@ -184,7 +194,7 @@ app.get('/auth/linkedin/callback',
       }
 
     } catch (error) {
-      console.error('Error in LinkedIn callback:', error); // Log the error
+      console.error('🐒 Error in LinkedIn callback:', error); // Log the error
       if (!res.headersSent) {
         res.status(500).json({ message: 'Internal Server Error', error: error.message });
       }

@@ -43,10 +43,7 @@ app.use(session({
 // Add logging to confirm session store is working
 app.use((req, res, next) => {
   if (req.session) {
-    console.log('🐒 Session ID:', req.session.id);
-    console.log('🐒 Session data:', req.session);
   } else {
-    console.warn('🐒 No session found');
   }
   next();
 });
@@ -85,13 +82,9 @@ const callbackURL = process.env.NODE_ENV === 'production'
   ? process.env.CALLBACK_URL_PROD
   : process.env.CALLBACK_URL_DEV;
 
-console.log(`Using LinkedIn callback URL: ${callbackURL}`); // Debug log
-
 // Add logs to confirm environment variables are loaded
 if (!process.env.LINKEDIN_CLIENT_ID || !process.env.LINKEDIN_CLIENT_SECRET || !callbackURL) {
-  console.error('🐒 Missing LinkedIn environment variables. Check LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, and CALLBACK_URL.');
 } else {
-  console.log('🐒 LinkedIn environment variables loaded successfully.');
 }
 
 // Add detailed logging to LinkedIn strategy
@@ -101,10 +94,6 @@ passport.use(new LinkedInStrategy({
   callbackURL: callbackURL,
   scope: ['r_ads_reporting', 'r_ads', 'r_basicprofile', 'r_organization_social'],
 }, (accessToken, refreshToken, profile, done) => {
-  console.log('🐒 LinkedIn Strategy invoked.');
-  console.log('🐒 Access Token:', accessToken);
-  console.log('🐒 Refresh Token:', refreshToken);
-  console.log('🐒 Profile:', profile);
   return done(null, { profile, accessToken, refreshToken });
 }));
 
@@ -114,13 +103,9 @@ app.get('/auth/linkedin', (req, res, next) => {
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
   res.set('Surrogate-Control', 'no-store');
-  console.log('🐒 LinkedIn authentication route hit');
-  console.log('🐒 Redirecting to LinkedIn for authentication...');
-  console.log('🐒 Session before LinkedIn redirect:', req.session);
   try {
     next();
   } catch (error) {
-    console.error('🐒 Error in LinkedIn authentication route:', error);
     res.status(500).send('Internal Server Error');
   }
 }, passport.authenticate('linkedin'));
@@ -128,26 +113,20 @@ app.get('/auth/linkedin', (req, res, next) => {
 // LinkedIn callback route
 app.get('/auth/linkedin/callback',
   (req, res, next) => {
-    console.log('🐒 LinkedIn callback route hit. Query params:', req.query);
-    console.log('🐒 Session at callback:', req.session);
     if (!req.query.code) {
-      console.error('🐒 Error: Missing authorization code in query params');
     }
     try {
       next();
     } catch (error) {
-      console.error('🐒 Error in LinkedIn callback route:', error);
       res.status(500).send('Internal Server Error');
     }
   },
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
     try {
-      console.log('🐒 LinkedIn callback triggered. User:', req.user);
       const { accessToken, profile } = req.user;
 
       if (!accessToken) {
-        console.error('🐒 Error: Access token not found');
         return res.status(400).json({ error: 'Access token not found' });
       }
 
@@ -158,7 +137,6 @@ app.get('/auth/linkedin/callback',
       const firstName = profile.name.givenName;
       const lastName = profile.name.familyName;
 
-      console.log('🐒 LinkedIn profile:', { linkedinId, firstName, lastName });
 
       const adAccountsUrl = `https://api.linkedin.com/rest/adAccountUsers?q=authenticatedUser`;
       const adAccountsResponse = await axios.get(adAccountsUrl, {
@@ -174,13 +152,11 @@ app.get('/auth/linkedin/callback',
         role: account.role,
       }));
 
-      console.log('🐒 Ad accounts fetched:', adAccounts);
 
       const existingUser = await usersCollection.findOne({ linkedinId });
       let user;
 
       if (existingUser) {
-        console.log('🐒 Existing user found, updating...');
         await usersCollection.updateOne(
           { linkedinId },
           {
@@ -195,7 +171,6 @@ app.get('/auth/linkedin/callback',
         );
         user = existingUser;
       } else {
-        console.log('🐒 New user, creating...');
         const newUser = {
           linkedinId,
           accessToken,
@@ -222,7 +197,6 @@ app.get('/auth/linkedin/callback',
       );
       await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
 
-      console.log('🐒 JWT tokens generated:', { jwtAccessToken, refreshToken });
 
       // Set the tokens in cookies
       res.cookie('accessToken', jwtAccessToken, {
@@ -237,7 +211,6 @@ app.get('/auth/linkedin/callback',
         ? process.env.FRONTEND_URL_PROD
         : process.env.FRONTEND_URL_DEV;
 
-      console.log('🐒 Redirecting to frontend:', `${frontendUrl}/history`);
 
       // Redirect to the frontend history page after successful login
       if (!res.headersSent) {
@@ -245,7 +218,6 @@ app.get('/auth/linkedin/callback',
       }
 
     } catch (error) {
-      console.error('🐒 Error in LinkedIn callback:', error); // Log the error
       if (!res.headersSent) {
         res.status(500).json({ message: 'Internal Server Error', error: error.message });
       }
@@ -713,7 +685,6 @@ app.get('/api/hello', (req, res) => {
 
 // Move static middleware to the end, after all dynamic routes
 if (process.env.NODE_ENV === 'production') {
-  console.log('🐒🐒🐒🐒🐒🐒🐒🐒🐒🐒Production mode: Serving static files from Vue app');
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   app.use(express.static(path.join(__dirname, '../public')));
@@ -725,10 +696,6 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.listen(PORT, () => {
-  console.log("🐒 ~ PORT:", PORT)
-  console.log(`🐒Application running in ${process.env.NODE_ENV} mode`);
-  console.log(`🐒Using LinkedIn callback URL: ${callbackURL}`);
-  console.log(`🐒Frontend URL: ${process.env.NODE_ENV === 'production' ? process.env.FRONTEND_URL_PROD : process.env.FRONTEND_URL_DEV}`);
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 

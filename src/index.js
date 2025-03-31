@@ -35,6 +35,19 @@ app.use(session({
   saveUninitialized: true
 }));
 
+// Trust Heroku proxy to preserve protocol
+app.set('trust proxy', 1);
+
+// Force HTTPS in production
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    if (req.headers['x-forwarded-proto'] !== 'https') {
+      return res.redirect(`https://${req.headers.host}${req.url}`);
+    }
+    next();
+  });
+}
+
 // Initialize Passport for LinkedIn OAuth
 app.use(passport.initialize());
 app.use(passport.session());

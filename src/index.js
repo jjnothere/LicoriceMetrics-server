@@ -108,23 +108,15 @@ passport.use(new LinkedInStrategy({
   return done(null, { profile, accessToken, refreshToken });
 }));
 
-if (process.env.NODE_ENV === 'production') {
-  console.log('🐒🐒🐒🐒🐒🐒🐒🐒🐒🐒Production mode: Serving static files from Vue app');
-  // Serve static files from the Vue app's build directory
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  app.use(express.static(path.join(__dirname, '../public')));
-
-  // Default route to serve the frontend
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../public/index.html'));
-  });
-}
-
 // LinkedIn authentication route
 app.get('/auth/linkedin', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.set('Surrogate-Control', 'no-store');
   console.log('🐒 LinkedIn authentication route hit');
   console.log('🐒 Redirecting to LinkedIn for authentication...');
+  console.log('🐒 Session before LinkedIn redirect:', req.session);
   try {
     next();
   } catch (error) {
@@ -137,6 +129,7 @@ app.get('/auth/linkedin', (req, res, next) => {
 app.get('/auth/linkedin/callback',
   (req, res, next) => {
     console.log('🐒 LinkedIn callback route hit. Query params:', req.query);
+    console.log('🐒 Session at callback:', req.session);
     if (!req.query.code) {
       console.error('🐒 Error: Missing authorization code in query params');
     }
@@ -717,6 +710,19 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
 app.get('/api/hello', (req, res) => {
   res.json({ message: 'Hello from Express backend!' });
 });
+
+// Move static middleware to the end, after all dynamic routes
+if (process.env.NODE_ENV === 'production') {
+  console.log('🐒🐒🐒🐒🐒🐒🐒🐒🐒🐒Production mode: Serving static files from Vue app');
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  app.use(express.static(path.join(__dirname, '../public')));
+
+  // Default route to serve the frontend
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+  });
+}
 
 app.listen(PORT, () => {
   console.log("🐒 ~ PORT:", PORT)

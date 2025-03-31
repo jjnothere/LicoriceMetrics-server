@@ -11,6 +11,7 @@ import cors from 'cors';
 import cron from 'node-cron';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import MongoStore from 'connect-mongo';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -32,7 +33,11 @@ app.use(cors({
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
-  saveUninitialized: true
+  saveUninitialized: true,
+  store: MongoStore.create({
+    mongoUrl: process.env.MONGODB_URI,
+    collectionName: 'sessions',
+  }),
 }));
 
 // Trust Heroku proxy to preserve protocol
@@ -109,14 +114,24 @@ if (process.env.NODE_ENV === 'production') {
 app.get('/auth/linkedin', (req, res, next) => {
   console.log('🐒 LinkedIn authentication route hit');
   console.log('🐒 Redirecting to LinkedIn for authentication...');
-  next();
+  try {
+    next();
+  } catch (error) {
+    console.error('🐒 Error in LinkedIn authentication route:', error);
+    res.status(500).send('Internal Server Error');
+  }
 }, passport.authenticate('linkedin'));
 
 // LinkedIn callback route
 app.get('/auth/linkedin/callback',
   (req, res, next) => {
     console.log('🐒 LinkedIn callback route hit. Query params:', req.query);
-    next();
+    try {
+      next();
+    } catch (error) {
+      console.error('🐒 Error in LinkedIn callback route:', error);
+      res.status(500).send('Internal Server Error');
+    }
   },
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {

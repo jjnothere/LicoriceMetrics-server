@@ -410,10 +410,16 @@ app.get('/api/get-all-changes', authenticateToken, async (req, res) => {
     const db = client.db('black-licorice');
     const userChanges = await db.collection('changes').findOne({ userId });
 
-    if (userChanges && userChanges.changes[adAccountId]) {
-      res.json(userChanges.changes[adAccountId]);
+    if (userChanges) {
+      res.json({
+        changes: userChanges.changes[adAccountId] || [],
+        urnInfoMap: userChanges.urnInfoMap || {}
+      });
     } else {
-      res.json([]); // Return an empty array if no changes are found for the ad account
+      res.json({
+        changes: [],
+        urnInfoMap: {}
+      });
     }
   } catch (error) {
     console.error('Error fetching changes from MongoDB:', error);
@@ -608,10 +614,9 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     // Fetch URN info if needed
     const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
     const urnInfoMap = await fetchUrnInformation(uniqueUrns, accessToken);
-    newDifferences.forEach((d) => (d.urnInfoMap = urnInfoMap));
 
     // Save the new differences
-    await saveChangesToDB(userId, adAccountId, newDifferences);
+    await saveChangesToDB(userId, adAccountId, newDifferences, urnInfoMap);
 
     // Save the updated adCampaigns back to DB
     await saveAdCampaignsToDB(userId, adCampaigns);
@@ -803,7 +808,7 @@ async function saveAdCampaignsToDB(userId, adCampaigns) {
 }
 
 // Save changes to DB
-async function saveChangesToDB(userId, adAccountId, changes) {
+async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
   if (!adAccountId) {
     console.error("Error: adAccountId is undefined.");
     return;
@@ -834,13 +839,17 @@ async function saveChangesToDB(userId, adAccountId, changes) {
     if (uniqueChanges.length > 0) {
       await collection.updateOne(
         { userId },
-        { $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } } }
+        {
+          $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } },
+          $set: { urnInfoMap: { ...existingUserChanges.urnInfoMap, ...urnInfoMap } }
+        }
       );
     }
   } else {
     await collection.insertOne({
       userId,
-      changes: { [adAccountId]: changesWithIds }
+      changes: { [adAccountId]: changesWithIds },
+      urnInfoMap
     });
   }
 }

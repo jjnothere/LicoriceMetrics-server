@@ -432,24 +432,31 @@ app.post('/api/add-note', authenticateToken, async (req, res) => {
   const { accountId, campaignId, newNote } = req.body;
   const userId = req.user.userId;
 
+  if (!accountId || !campaignId || !newNote) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
   try {
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
+    const noteId = new ObjectId().toHexString(); // Generate a string ID
+    const timestamp = new Date().toISOString();
 
-    const note = { _id: new ObjectId(), note: newNote, timestamp: new Date().toISOString() };
-
-    // Add the new note to the specific campaign within the specified ad account
     const result = await changesCollection.updateOne(
       { userId },
-      { $push: { [`changes.${accountId}.$[elem].notes`]: note } },
-      { arrayFilters: [{ "elem._id": new ObjectId(campaignId) }] }
+      { $push: { [`changes.${accountId}.$[campaignElem].notes`]: { _id: noteId, note: newNote, timestamp } } },
+      {
+        arrayFilters: [
+          { "campaignElem._id": new ObjectId(campaignId) } // Convert campaignId to ObjectId
+        ]
+      }
     );
 
     if (result.modifiedCount === 0) {
       return res.status(404).send('Campaign not found');
     }
 
-    res.send('Note added successfully');
+    res.json({ noteId, timestamp });
   } catch (error) {
     console.error('Error adding note:', error);
     res.status(500).send('Internal Server Error');
@@ -480,7 +487,7 @@ app.post('/api/edit-note', authenticateToken, async (req, res) => {
       {
         arrayFilters: [
           { "campaignElem._id": new ObjectId(campaignId) },
-          { "noteElem._id": new ObjectId(noteId) }
+          { $or: [{ "noteElem._id": noteId }, { "noteElem._id": new ObjectId(noteId) }] } // Match both string and ObjectId formats
         ]
       }
     );
@@ -509,12 +516,19 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
     const db = client.db('black-licorice');
     const changesCollection = db.collection('changes');
 
+    // Attempt to match both string and ObjectId formats for noteId
     const result = await changesCollection.updateOne(
       { userId },
-      { $pull: { [`changes.${accountId}.$[campaignElem].notes`]: { _id: new ObjectId(noteId) } } },
+      {
+        $pull: {
+          [`changes.${accountId}.$[campaignElem].notes`]: {
+            $or: [{ _id: noteId }, { _id: new ObjectId(noteId) }]
+          }
+        }
+      },
       {
         arrayFilters: [
-          { "campaignElem._id": new ObjectId(campaignId) }
+          { "campaignElem._id": new ObjectId(campaignId) } // Ensure campaignId is an ObjectId
         ]
       }
     );
@@ -529,7 +543,6 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
-
 // New route to check for changes for a specific user and ad account
 app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
   const { userId, adAccountId } = req.body;

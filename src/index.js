@@ -12,6 +12,7 @@ import cron from 'node-cron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import MongoStore from 'connect-mongo';
+import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -84,7 +85,7 @@ const callbackURL = process.env.NODE_ENV === 'production'
 
 // Add logs to confirm environment variables are loaded
 if (!process.env.LINKEDIN_CLIENT_ID || !process.env.LINKEDIN_CLIENT_SECRET || !callbackURL) {
-} else {
+  console.warn('LinkedIn OAuth environment variables are missing or incomplete.');
 }
 
 // Add detailed logging to LinkedIn strategy
@@ -131,7 +132,7 @@ app.get('/auth/linkedin/callback',
       }
 
       await client.connect();
-      const db = client.db('black-licorice');
+      const db = client.db(process.env.DB_NAME);
       const usersCollection = db.collection('users');
       const linkedinId = profile.id;
       const firstName = profile.name.givenName;
@@ -252,7 +253,7 @@ const authenticateToken = (req, res, next) => {
 // API route to fetch the logged-in user's profile
 app.get('/api/user-profile', authenticateToken, async (req, res) => {
     try {
-      const user = await client.db('black-licorice').collection('users').findOne(
+      const user = await client.db(process.env.DB_NAME).collection('users').findOne(
         { linkedinId: req.user.linkedinId }, 
         { projection: { email: 1, firstName: 1, lastName: 1, adAccounts: 1 } }
       );
@@ -278,7 +279,7 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
 app.post('/api/logout', authenticateToken, async (req, res) => {
   try {
     await client.connect();
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const usersCollection = db.collection('users');
 
     await usersCollection.updateOne({ linkedinId: req.user.linkedinId }, { $unset: { refreshToken: '' } });
@@ -294,7 +295,7 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
 
 app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
   try {
-    const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+    const user = await client.db(process.env.DB_NAME).collection('users').findOne({ linkedinId: req.user.linkedinId });
 
     if (!user || !user.adAccounts || user.adAccounts.length === 0) {
       return res.status(404).json({ error: 'Ad accounts not found for this user' });
@@ -344,7 +345,7 @@ app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
     }
 
     // Update the user document with the fetched account names if needed
-    await client.db('black-licorice').collection('users').updateOne(
+    await client.db(process.env.DB_NAME).collection('users').updateOne(
       { linkedinId: req.user.linkedinId },
       { $set: { 'adAccounts.$[elem].name': { $each: validAdAccounts.map(acc => acc.name) } } },
       { arrayFilters: [{ 'elem.accountId': { $in: validAdAccounts.map(acc => acc.id) } }] }
@@ -369,7 +370,7 @@ app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
   const endDate = new Date(end);
 
   // Find the user's LinkedIn token and confirm access to the specified account
-  const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+  const user = await client.db(process.env.DB_NAME).collection('users').findOne({ linkedinId: req.user.linkedinId });
   const userAdAccountID = user.adAccounts.find(acc => acc.accountId === accountId)?.accountId;
 
   if (!userAdAccountID) {
@@ -407,7 +408,7 @@ app.get('/api/get-all-changes', authenticateToken, async (req, res) => {
 
   try {
     await client.connect();
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const userChanges = await db.collection('changes').findOne({ userId });
 
     if (userChanges) {
@@ -437,7 +438,7 @@ app.post('/api/add-note', authenticateToken, async (req, res) => {
   }
 
   try {
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const changesCollection = db.collection('changes');
     const noteId = new ObjectId().toHexString(); // Generate a string ID
     const timestamp = new Date().toISOString();
@@ -473,7 +474,7 @@ app.post('/api/edit-note', authenticateToken, async (req, res) => {
   }
 
   try {
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const changesCollection = db.collection('changes');
 
     const result = await changesCollection.updateOne(
@@ -513,7 +514,7 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
   }
 
   try {
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const changesCollection = db.collection('changes');
 
     // Attempt to match both string and ObjectId formats for noteId
@@ -546,101 +547,96 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
 // New route to check for changes for a specific user and ad account
 app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
   const { userId, adAccountId } = req.body;
-
   if (!userId || !adAccountId) {
     return res.status(400).json({ message: 'User ID and Ad Account ID are required' });
   }
 
   try {
     await client.connect();
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const usersCollection = db.collection('users');
 
-    // Fetch the specific user
+    // 1) Load user and verify token
     const user = await usersCollection.findOne({ userId });
-
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-
-    const { adAccounts } = user;
-
-    // Verify and refresh token if needed
     const accessToken = await verifyAndRefreshTokenIfNeeded(user);
     if (!accessToken) {
       return res.status(401).json({ message: 'Invalid or expired token' });
     }
 
-    // Check if the user has the specified ad account
-    const account = adAccounts.find(acc => acc.accountId === adAccountId);
+    // 2) Make sure the user actually has that ad account
+    const account = user.adAccounts.find(acc => acc.accountId === adAccountId);
     if (!account) {
       return res.status(404).json({ message: 'Ad account not found for this user' });
     }
 
-    // Fetch updated ad campaigns & creatives
+    // 3) Fetch current and LinkedIn campaigns
     const adCampaigns = await fetchAdCampaigns(userId, accessToken, [adAccountId]);
-
-    // Fetch current campaigns from DB
     const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, adAccountId);
-
-    // Get LinkedIn campaigns from adCampaigns object
     const linkedInCampaigns = adCampaigns[adAccountId]?.campaigns || [];
 
     const newDifferences = [];
-    const urns = []; // Collect URNs here
+    const urns = [];
 
-    // Compare campaigns
+    // 4) Compare campaigns
     for (const campaign2 of linkedInCampaigns) {
-      const campaign1 = currentCampaigns.find((c) => String(c.id) === String(campaign2.id));
-      const changes = findDifferences(campaign1 || {}, campaign2, urns);
+      // Try to find it in our DB
+      const campaign1 = currentCampaigns.find(c => String(c.id) === String(campaign2.id));
 
+      // A) BRAND-NEW campaign: push only the “added” message and skip diffs
+      if (!campaign1) {
+        newDifferences.push({
+          campaignId: campaign2.id,
+          campaign:  campaign2.name,
+          date:      formatDate(new Date()),
+          changes:   { campaignAdded: campaign2.name },
+          notes:     campaign2.notes || [],
+          _id:       new ObjectId(),
+        });
+        continue;
+      }
+
+      // B) EXISTING campaign: compute detailed diffs
+      const changes = findDifferences(campaign1, campaign2, urns);
       if (Object.keys(changes).length > 0) {
+        // If campaignGroup changed, fetch its human name
         if (changes.campaignGroup) {
           const groupId = changes.campaignGroup.newValue?.split(':').pop();
           if (groupId) {
-            changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(accessToken, adAccountId, groupId);
+            changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(
+              accessToken,
+              adAccountId,
+              groupId
+            );
           }
         }
 
-        const difference = {
-          campaignId: campaign2.id,
-          campaign: campaign2.name,
-          date: formatDate(new Date()),
-          changes,
-          notes: campaign2.notes || [],
-          _id: campaign1 && campaign1._id ? new ObjectId(campaign1._id) : new ObjectId(),
-        };
-        newDifferences.push(difference);
-      } else if (!campaign1) {
-        // New campaign
         newDifferences.push({
           campaignId: campaign2.id,
-          campaign: campaign2.name,
-          date: formatDate(new Date()),
-          changes: { message: 'New campaign added' },
-          notes: [],
-          _id: new ObjectId(),
+          campaign:   campaign2.name,
+          date:       formatDate(new Date()),
+          changes,
+          notes:      campaign2.notes || [],
+          _id:        campaign1._id || new ObjectId(),
         });
       }
     }
 
-    // Fetch URN info if needed
+    // 5) Enrich URNs, save everything back to Mongo
     const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
     const urnInfoMap = await fetchUrnInformation(uniqueUrns, accessToken);
 
-    // Save the new differences
     await saveChangesToDB(userId, adAccountId, newDifferences, urnInfoMap);
-
-    // Save the updated adCampaigns back to DB
     await saveAdCampaignsToDB(userId, adCampaigns);
 
     res.status(200).json({ message: 'Changes checked and saved successfully' });
   } catch (error) {
-    console.error('Error in checking changes for user and ad account:', error);
+    console.error('Error in /api/check-for-changes route:', error);
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-
 app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (req, res) => {
   const { accountId } = req.query;
 
@@ -649,7 +645,7 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
   }
 
   try {
-    const user = await client.db('black-licorice').collection('users').findOne({ linkedinId: req.user.linkedinId });
+    const user = await client.db(process.env.DB_NAME).collection('users').findOne({ linkedinId: req.user.linkedinId });
 
     if (!user || !user.accessToken) {
       return res.status(404).json({ error: 'User or access token not found' });
@@ -721,7 +717,7 @@ app.listen(PORT, () => {
 async function checkForChangesForAllUsers() {
   try {
     await client.connect();
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const usersCollection = db.collection('users');
 
     // Fetch all users from the database
@@ -782,7 +778,7 @@ async function checkForChangesForAllUsers() {
               newDifferences.push({
                 campaign: campaign2.name,
                 date: formatDate(new Date()),
-                changes: { message: 'New campaign added' },
+                changes: { campaignAdded: campaign2.name },
                 notes: [],
                 _id: new ObjectId(),
               });
@@ -812,7 +808,7 @@ async function checkForChangesForAllUsers() {
 
 // Save Ad Campaigns to DB
 async function saveAdCampaignsToDB(userId, adCampaigns) {
-  const db = client.db('black-licorice');
+  const db = client.db(process.env.DB_NAME);
   await db.collection('adCampaigns').updateOne(
     { userId },
     { $set: { adCampaigns } },
@@ -827,7 +823,7 @@ async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
     return;
   }
 
-  const db = client.db('black-licorice');
+  const db = client.db(process.env.DB_NAME);
   const collection = db.collection('changes');
 
   const changesWithIds = changes.map(change => ({
@@ -868,7 +864,7 @@ async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
 }
 
 async function fetchAdCampaigns(userId, accessToken, accountIds) {
-  const db = client.db('black-licorice');
+  const db = client.db(process.env.DB_NAME);
   const existingAdCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
   const adCampaigns = {};
 
@@ -1015,7 +1011,7 @@ async function verifyAndRefreshTokenIfNeeded(user) {
       const newAccessToken = await refreshUserAccessToken(user.refreshToken);
       if (newAccessToken) {
         // Update DB with newAccessToken
-        const db = client.db('black-licorice');
+        const db = client.db(process.env.DB_NAME);
         await db.collection('users').updateOne({ userId: user.userId }, { $set: { accessToken: newAccessToken } });
         return newAccessToken;
       } else {
@@ -1041,7 +1037,7 @@ async function refreshUserAccessToken(refreshToken) {
     const userId = decoded.userId;
 
     await client.connect();
-    const db = client.db('black-licorice');
+    const db = client.db(process.env.DB_NAME);
     const user = await db.collection('users').findOne({ userId });
 
     if (!user || user.refreshToken !== refreshToken) {
@@ -1219,7 +1215,7 @@ async function fetchCampaignGroupNameBackend(token, accountId, groupId) {
 
 // Fetch current campaigns from our database
 async function fetchCurrentCampaignsFromDB(userId, accountId) {
-  const db = client.db('black-licorice');
+  const db = client.db(process.env.DB_NAME);
   const adCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
   return adCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [];
 }

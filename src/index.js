@@ -1065,11 +1065,20 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
   const diffs = {};
 
   for (const key in obj1) {
-    if (key === 'changeAuditStamps' || key === 'version' || key === 'campaignGroup') continue; // Exclude version
+    if (key === 'changeAuditStamps' || key === 'version' || key === 'campaignGroup') continue;
 
     if (Object.prototype.hasOwnProperty.call(obj2, key)) {
       const val1 = obj1[key];
       const val2 = obj2[key];
+
+      // Handle amount key
+      if (key === 'amount' && val1 !== val2) {
+        diffs[key] = {
+          oldValue: `$${val1}`,
+          newValue: `$${val2}`,
+        };
+        continue;
+      }
 
       // Handle targeting criteria (added/removed logic)
       if (key.startsWith('urn:li:adTargetingFacet:') && Array.isArray(val1) && Array.isArray(val2)) {
@@ -1181,13 +1190,20 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
   }
 
   for (const key in obj2) {
-    if (key === 'version') continue; // Exclude version
+    if (key === 'version') continue;
 
     if (!Object.prototype.hasOwnProperty.call(obj1, key)) {
-      diffs[key] = {
-        oldValue: null,
-        newValue: replaceUrnWithInfo(obj2[key], urnInfoMap),
-      };
+      if (key === 'amount') {
+        diffs[key] = {
+          oldValue: null,
+          newValue: `$${obj2[key]}`,
+        };
+      } else {
+        diffs[key] = {
+          oldValue: null,
+          newValue: replaceUrnWithInfo(obj2[key], urnInfoMap),
+        };
+      }
       extractUrnsFromValue(obj2[key], urns);
     }
   }

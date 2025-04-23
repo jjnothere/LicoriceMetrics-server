@@ -1065,7 +1065,7 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
   const diffs = {};
 
   for (const key in obj1) {
-    if (key === 'changeAuditStamps' || key === 'version' || key === 'campaignGroup') continue;
+    if (key === 'changeAuditStamps' || key === 'version' || key === 'campaignGroup') continue; // Exclude version
 
     if (Object.prototype.hasOwnProperty.call(obj2, key)) {
       const val1 = obj1[key];
@@ -1181,6 +1181,8 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
   }
 
   for (const key in obj2) {
+    if (key === 'version') continue; // Exclude version
+
     if (!Object.prototype.hasOwnProperty.call(obj1, key)) {
       diffs[key] = {
         oldValue: null,

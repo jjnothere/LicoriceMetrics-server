@@ -227,27 +227,53 @@ app.get('/auth/linkedin/callback',
 );
 
 // Token verification middleware
-const authenticateToken = (req, res, next) => {
+// Server-side (Express)
+const authenticateToken = async (req, res, next) => {
   const token = req.cookies.accessToken;
-
   if (!token) {
-    console.warn('No token found in cookies.');
     return res.status(401).json({ message: 'Access Denied' });
   }
 
-  try {
-    jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET, (err, user) => {
-      if (err) {
-        console.error('Token verification failed:', err.message);
-        return res.status(401).json({ message: 'Invalid or expired token' });
+  // Try verifying the access token
+  jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET, async (err, payload) => {
+    if (err) {
+      // If it’s expired, try to refresh
+      if (err.name === 'TokenExpiredError') {
+        const refreshToken = req.cookies.refreshToken;
+        if (!refreshToken) {
+          return res.status(401).json({ message: 'Refresh token missing' });
+        }
+
+        const newAccessToken = await refreshUserAccessToken(refreshToken);
+        if (!newAccessToken) {
+          return res.status(401).json({ message: 'Could not refresh access token' });
+        }
+
+        // Set the new access token cookie
+        res.cookie('accessToken', newAccessToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'none',
+          maxAge: 2 * 60 * 60 * 1000, // 2 hours
+        });
+
+        // Decode the fresh token into req.user
+        jwt.verify(newAccessToken, process.env.LINKEDIN_CLIENT_SECRET, (err2, freshPayload) => {
+          if (err2) return res.status(401).json({ message: 'Token refresh failed' });
+          req.user = freshPayload;
+          next();
+        });
+
+      } else {
+        // Some other token error
+        return res.status(401).json({ message: 'Invalid token' });
       }
-      req.user = user;
+    } else {
+      // Token still valid
+      req.user = payload;
       next();
-    });
-  } catch (error) {
-    console.error('Error verifying token:', error.message);
-    return res.status(403).json({ message: 'Invalid Token' });
-  }
+    }
+  });
 };
 
 // API route to fetch the logged-in user's profile

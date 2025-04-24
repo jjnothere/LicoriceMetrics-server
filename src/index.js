@@ -74,20 +74,9 @@ passport.deserializeUser((obj, done) => {
   done(null, obj);
 });
 
-// MongoDB client setup with SSL options
+// MongoDB client setup
 const url = process.env.MONGODB_URI;
-const client = new MongoClient(url, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  ssl: true, // Enable SSL
-  tlsAllowInvalidCertificates: process.env.ALLOW_INVALID_CERTS === 'true', // Allow invalid certificates if explicitly set
-});
-
-// Add error handling for MongoDB connection
-client.connect().catch((err) => {
-  console.error('Error connecting to MongoDB:', err.message);
-  process.exit(1); // Exit the process if the connection fails
-});
+const client = new MongoClient(url);
 
 // LinkedIn Strategy for OAuth 2.0
 const callbackURL = process.env.NODE_ENV === 'production'
@@ -238,53 +227,27 @@ app.get('/auth/linkedin/callback',
 );
 
 // Token verification middleware
-// Server-side (Express)
-const authenticateToken = async (req, res, next) => {
+const authenticateToken = (req, res, next) => {
   const token = req.cookies.accessToken;
+
   if (!token) {
+    console.warn('No token found in cookies.');
     return res.status(401).json({ message: 'Access Denied' });
   }
 
-  // Try verifying the access token
-  jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET, async (err, payload) => {
-    if (err) {
-      // If it’s expired, try to refresh
-      if (err.name === 'TokenExpiredError') {
-        const refreshToken = req.cookies.refreshToken;
-        if (!refreshToken) {
-          return res.status(401).json({ message: 'Refresh token missing' });
-        }
-
-        const newAccessToken = await refreshUserAccessToken(refreshToken);
-        if (!newAccessToken) {
-          return res.status(401).json({ message: 'Could not refresh access token' });
-        }
-
-        // Set the new access token cookie
-        res.cookie('accessToken', newAccessToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'none',
-          maxAge: 2 * 60 * 60 * 1000, // 2 hours
-        });
-
-        // Decode the fresh token into req.user
-        jwt.verify(newAccessToken, process.env.LINKEDIN_CLIENT_SECRET, (err2, freshPayload) => {
-          if (err2) return res.status(401).json({ message: 'Token refresh failed' });
-          req.user = freshPayload;
-          next();
-        });
-
-      } else {
-        // Some other token error
-        return res.status(401).json({ message: 'Invalid token' });
+  try {
+    jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET, (err, user) => {
+      if (err) {
+        console.error('Token verification failed:', err.message);
+        return res.status(401).json({ message: 'Invalid or expired token' });
       }
-    } else {
-      // Token still valid
-      req.user = payload;
+      req.user = user;
       next();
-    }
-  });
+    });
+  } catch (error) {
+    console.error('Error verifying token:', error.message);
+    return res.status(403).json({ message: 'Invalid Token' });
+  }
 };
 
 // API route to fetch the logged-in user's profile

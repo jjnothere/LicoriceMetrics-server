@@ -74,9 +74,20 @@ passport.deserializeUser((obj, done) => {
   done(null, obj);
 });
 
-// MongoDB client setup
+// MongoDB client setup with SSL options
 const url = process.env.MONGODB_URI;
-const client = new MongoClient(url);
+const client = new MongoClient(url, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  ssl: true, // Enable SSL
+  tlsAllowInvalidCertificates: process.env.ALLOW_INVALID_CERTS === 'true', // Allow invalid certificates if explicitly set
+});
+
+// Add error handling for MongoDB connection
+client.connect().catch((err) => {
+  console.error('Error connecting to MongoDB:', err.message);
+  process.exit(1); // Exit the process if the connection fails
+});
 
 // LinkedIn Strategy for OAuth 2.0
 const callbackURL = process.env.NODE_ENV === 'production'

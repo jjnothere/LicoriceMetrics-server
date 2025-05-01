@@ -62,6 +62,29 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+// Middleware to refresh access token if expired
+app.use(async (req, res, next) => {
+  const refreshToken = req.cookies.refreshToken;
+
+  if (!req.cookies.accessToken && refreshToken) {
+    try {
+      const newAccessToken = await refreshUserAccessToken(refreshToken);
+      if (newAccessToken) {
+        res.cookie('accessToken', newAccessToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'none',
+          maxAge: 2 * 60 * 60 * 1000, // 2 hours
+        });
+        req.cookies.accessToken = newAccessToken; // Update the request with the new token
+      }
+    } catch (error) {
+      console.error('Error refreshing access token:', error.message);
+    }
+  }
+  next();
+});
+
 // Initialize Passport for LinkedIn OAuth
 app.use(passport.initialize());
 app.use(passport.session());
@@ -1077,8 +1100,8 @@ async function refreshUserAccessToken(refreshToken) {
       { expiresIn: '2h' }
     );
 
-    // Optionally, you can also update the user's record in the database if needed
-    // await db.collection('users').updateOne({ userId }, { $set: { accessToken: newAccessToken } });
+    // Save the new access token in the database
+    await db.collection('users').updateOne({ userId }, { $set: { accessToken: newAccessToken } });
 
     return newAccessToken;
   } catch (error) {

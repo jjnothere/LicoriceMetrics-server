@@ -62,24 +62,30 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// Middleware to refresh access token if expired
+// Middleware to refresh tokens and update cookies
 app.use(async (req, res, next) => {
   const refreshToken = req.cookies.refreshToken;
 
   if (!req.cookies.accessToken && refreshToken) {
     try {
-      const newAccessToken = await refreshUserAccessToken(refreshToken);
-      if (newAccessToken) {
-        res.cookie('accessToken', newAccessToken, {
+      const tokens = await refreshUserAccessToken(refreshToken);
+      if (tokens) {
+        res.cookie('accessToken', tokens.newAccessToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
           sameSite: 'none',
           maxAge: 2 * 60 * 60 * 1000, // 2 hours
         });
-        req.cookies.accessToken = newAccessToken; // Update the request with the new token
+        res.cookie('refreshToken', tokens.newRefreshToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'none',
+          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        });
+        req.cookies.accessToken = tokens.newAccessToken; // Update the request with the new token
       }
     } catch (error) {
-      console.error('Error refreshing access token:', error.message);
+      console.error('Error refreshing tokens:', error.message);
     }
   }
   next();
@@ -1094,16 +1100,26 @@ async function refreshUserAccessToken(refreshToken) {
       return null;
     }
 
+    // Generate a new refresh token to replace the old one
+    const newRefreshToken = jwt.sign(
+      { userId: user.userId, linkedinId: user.linkedinId },
+      process.env.REFRESH_TOKEN_SECRET,
+      { expiresIn: '7d' }
+    );
+
     const newAccessToken = jwt.sign(
       { userId: user.userId, linkedinId: user.linkedinId },
       process.env.LINKEDIN_CLIENT_SECRET,
       { expiresIn: '2h' }
     );
 
-    // Save the new access token in the database
-    await db.collection('users').updateOne({ userId }, { $set: { accessToken: newAccessToken } });
+    // Save the new tokens in the database
+    await db.collection('users').updateOne(
+      { userId },
+      { $set: { accessToken: newAccessToken, refreshToken: newRefreshToken } }
+    );
 
-    return newAccessToken;
+    return { newAccessToken, newRefreshToken };
   } catch (error) {
     console.error('Error refreshing token:', error.message);
     return null;

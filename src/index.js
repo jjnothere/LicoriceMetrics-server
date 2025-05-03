@@ -62,32 +62,41 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// Middleware to refresh tokens and update cookies
+// ─── Middleware to auto-refresh on missing accessToken ─────────────────────────
 app.use(async (req, res, next) => {
   const refreshToken = req.cookies.refreshToken;
 
+  // Only try to refresh if there's no accessToken but we do have a refreshToken
   if (!req.cookies.accessToken && refreshToken) {
     try {
       const tokens = await refreshUserAccessToken(refreshToken);
-      if (tokens) {
-        res.cookie('accessToken', tokens.newAccessToken, {
+      if (tokens?.newAccessToken) {
+        const { newAccessToken, newRefreshToken } = tokens;
+
+        // Reset both cookies with the correct flags
+        res.cookie('accessToken', newAccessToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
           sameSite: 'none',
-          maxAge: 2 * 60 * 60 * 1000, // 2 hours
+          path: '/',
+          maxAge: 2 * 60 * 60 * 1000, // 2h
         });
-        res.cookie('refreshToken', tokens.newRefreshToken, {
+        res.cookie('refreshToken', newRefreshToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
           sameSite: 'none',
-          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+          path: '/',
+          maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
         });
-        req.cookies.accessToken = tokens.newAccessToken; // Update the request with the new token
+
+        // So any downstream code sees the fresh token
+        req.cookies.accessToken = newAccessToken;
       }
-    } catch (error) {
-      console.error('Error refreshing tokens:', error.message);
+    } catch (err) {
+      console.error('Error refreshing tokens:', err);
     }
   }
+
   next();
 });
 
@@ -255,50 +264,63 @@ app.get('/auth/linkedin/callback',
   }
 );
 
-// Token verification middleware
-// Server-side (Express)
+// ─── authenticateToken middleware with proper destructuring ─────────────────
 const authenticateToken = async (req, res, next) => {
   const token = req.cookies.accessToken;
   if (!token) {
     return res.status(401).json({ message: 'Access Denied' });
   }
 
-  // Try verifying the access token
   jwt.verify(token, process.env.LINKEDIN_CLIENT_SECRET, async (err, payload) => {
     if (err) {
-      // If it’s expired, try to refresh
+      // expired? try to refresh
       if (err.name === 'TokenExpiredError') {
         const refreshToken = req.cookies.refreshToken;
         if (!refreshToken) {
           return res.status(401).json({ message: 'Refresh token missing' });
         }
 
-        const newAccessToken = await refreshUserAccessToken(refreshToken);
-        if (!newAccessToken) {
+        try {
+          const tokens = await refreshUserAccessToken(refreshToken);
+          if (!tokens?.newAccessToken) {
+            return res.status(401).json({ message: 'Could not refresh access token' });
+          }
+          const { newAccessToken, newRefreshToken } = tokens;
+
+          // Reset both cookies
+          res.cookie('accessToken', newAccessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'none',
+            path: '/',
+            maxAge: 2 * 60 * 60 * 1000,
+          });
+          res.cookie('refreshToken', newRefreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'none',
+            path: '/',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+          });
+
+          // Verify the new token and continue
+          jwt.verify(newAccessToken, process.env.LINKEDIN_CLIENT_SECRET, (err2, freshPayload) => {
+            if (err2) {
+              return res.status(401).json({ message: 'Token refresh failed' });
+            }
+            req.user = freshPayload;
+            next();
+          });
+        } catch (refreshErr) {
+          console.error('Error during token refresh:', refreshErr);
           return res.status(401).json({ message: 'Could not refresh access token' });
         }
-
-        // Set the new access token cookie
-        res.cookie('accessToken', newAccessToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'none',
-          maxAge: 2 * 60 * 60 * 1000, // 2 hours
-        });
-
-        // Decode the fresh token into req.user
-        jwt.verify(newAccessToken, process.env.LINKEDIN_CLIENT_SECRET, (err2, freshPayload) => {
-          if (err2) return res.status(401).json({ message: 'Token refresh failed' });
-          req.user = freshPayload;
-          next();
-        });
-
       } else {
-        // Some other token error
+        // some other JWT error
         return res.status(401).json({ message: 'Invalid token' });
       }
     } else {
-      // Token still valid
+      // token still valid
       req.user = payload;
       next();
     }

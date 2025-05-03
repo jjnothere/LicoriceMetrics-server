@@ -836,7 +836,35 @@ app.get('/api/get-presets', authenticateToken, async (req, res) => {
   }
 });
 
+// Delete a preset
+app.delete('/api/delete-preset', authenticateToken, async (req, res) => {
+  const { name } = req.body;
+  const userId = req.user.userId;
 
+  if (!name) {
+    return res.status(400).json({ message: 'Preset name is required' });
+  }
+
+  try {
+    await client.connect(); // Ensure the MongoDB client is connected
+    const db = client.db(process.env.DB_NAME);
+    const usersCollection = db.collection('users');
+
+    const result = await usersCollection.updateOne(
+      { userId },
+      { $pull: { presets: { name } } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ message: 'Preset not found' });
+    }
+
+    res.status(200).json({ message: 'Preset deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting preset:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 
 app.get('/api/hello', (req, res) => {
   res.json({ message: 'Hello from Express backend!' });

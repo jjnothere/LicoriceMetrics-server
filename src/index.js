@@ -775,6 +775,69 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
   }
 });
 
+// Save a preset
+app.post('/api/save-preset', authenticateToken, async (req, res) => {
+  const { name, filters, searchText, selectedCampaigns, selectedCampaignIds } = req.body;
+  const userId = req.user.userId;
+
+  if (!name || !filters) {
+    return res.status(400).json({ message: 'Preset name and filters are required' });
+  }
+
+  try {
+    const db = client.db(process.env.DB_NAME);
+    const usersCollection = db.collection('users');
+
+    const result = await usersCollection.updateOne(
+      { userId },
+      {
+        $push: {
+          presets: {
+            name,
+            filters,
+            searchText,
+            selectedCampaigns: selectedCampaigns || [], // Save selected campaigns
+            selectedCampaignIds: selectedCampaignIds || [] // Save selected campaign IDs
+          }
+        }
+      }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.status(200).json({ message: 'Preset saved successfully' });
+  } catch (error) {
+    console.error('Error saving preset:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// Retrieve presets
+app.get('/api/get-presets', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+
+  try {
+    await client.connect(); // Ensure the MongoDB client is connected
+    const db = client.db(process.env.DB_NAME);
+    const usersCollection = db.collection('users'); // Define usersCollection
+
+    const user = await usersCollection.findOne({ userId }, { projection: { presets: 1 } });
+
+    if (!user || !user.presets) {
+      return res.status(404).json({ message: 'No presets found' });
+    }
+
+    res.status(200).json(user.presets);
+  } catch (error) {
+    console.error('Error retrieving presets:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+
+
 app.get('/api/hello', (req, res) => {
   res.json({ message: 'Hello from Express backend!' });
 });

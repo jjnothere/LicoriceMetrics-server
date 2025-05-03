@@ -348,6 +348,33 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
   }
 });
 
+app.post('/api/refresh-token', async (req, res) => {
+  const rt = req.cookies.refreshToken;
+  if (!rt) return res.status(401).json({ message: 'Refresh token missing' });
+
+  const tokens = await refreshUserAccessToken(rt);
+  if (!tokens) return res.status(403).json({ message: 'Invalid or expired refresh token' });
+
+  // Re-set both cookies
+  res.cookie('accessToken', tokens.newAccessToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'none',
+    maxAge: 2 * 60 * 60 * 1000,
+    path: '/',
+  });
+  res.cookie('refreshToken', tokens.newRefreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'none',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: '/',
+  });
+
+  // Send back the access token too in case you still want to decode it client-side
+  res.json({ accessToken: tokens.newAccessToken });
+});
+
 app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
   try {
     const user = await client.db(process.env.DB_NAME).collection('users').findOne({ linkedinId: req.user.linkedinId });

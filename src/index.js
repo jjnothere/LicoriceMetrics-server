@@ -1,3 +1,4 @@
+const isProduction = process.env.NODE_ENV === 'production';
 import { MongoClient, ObjectId } from 'mongodb';
 import express from 'express';
 import passport from 'passport';
@@ -76,15 +77,15 @@ app.use(async (req, res, next) => {
         // Reset both cookies with the correct flags
         res.cookie('accessToken', newAccessToken, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'none',
+          secure: isProduction,
+          sameSite: isProduction ? 'none' : 'lax',
           path: '/',
           maxAge: 2 * 60 * 60 * 1000, // 2h
         });
         res.cookie('refreshToken', newRefreshToken, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'none',
+          secure: isProduction,
+          sameSite: isProduction ? 'none' : 'lax',
           path: '/',
           maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
         });
@@ -200,7 +201,7 @@ app.get('/auth/linkedin/callback',
           { linkedinId },
           {
             $set: {
-              accessToken,
+              linkedinToken: accessToken,
               firstName,
               lastName,
               lastLogin: new Date(),
@@ -212,7 +213,7 @@ app.get('/auth/linkedin/callback',
       } else {
         const newUser = {
           linkedinId,
-          accessToken,
+          linkedinToken: accessToken,
           firstName,
           lastName,
           userId: uuidv4(),
@@ -237,11 +238,18 @@ app.get('/auth/linkedin/callback',
       await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
 
 
-      // Set the tokens in cookies
+      // Set HttpOnly, secure, cross-site cookies for OAuth tokens
       res.cookie('accessToken', jwtAccessToken, {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
+        path: '/',
         maxAge: 2 * 60 * 60 * 1000, // 2 hours
       });
       res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
         path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       });
@@ -290,15 +298,15 @@ const authenticateToken = async (req, res, next) => {
           // Reset both cookies
           res.cookie('accessToken', newAccessToken, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'none',
+            secure: isProduction,
+            sameSite: isProduction ? 'none' : 'lax',
             path: '/',
             maxAge: 2 * 60 * 60 * 1000,
           });
           res.cookie('refreshToken', newRefreshToken, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'none',
+            secure: isProduction,
+            sameSite: isProduction ? 'none' : 'lax',
             path: '/',
             maxAge: 7 * 24 * 60 * 60 * 1000,
           });
@@ -331,14 +339,14 @@ const authenticateToken = async (req, res, next) => {
 app.get('/api/user-profile', authenticateToken, async (req, res) => {
     try {
       const user = await client.db(process.env.DB_NAME).collection('users').findOne(
-        { linkedinId: req.user.linkedinId }, 
-        { projection: { email: 1, firstName: 1, lastName: 1, adAccounts: 1 } }
+        { linkedinId: req.user.linkedinId },
+        { projection: { email: 1, firstName: 1, lastName: 1, adAccounts: 1, userId: 1, linkedinId: 1 } }
       );
-      
+
       if (!user) {
         return res.status(404).json({ message: 'User not found' });
       }
-  
+
       res.json({
         email: user.email,
         firstName: user.firstName,
@@ -346,7 +354,9 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
         adAccounts: user.adAccounts.map(acc => ({
           id: acc.accountId,
           name: acc.name // Assuming the name of the ad account is fetched
-        }))
+        })),
+        userId: user.userId,
+        linkedinId: user.linkedinId
       });
     } catch (error) {
       res.status(500).json({ message: 'Internal Server Error' });
@@ -380,15 +390,15 @@ app.post('/api/refresh-token', async (req, res) => {
   // Re-set both cookies
   res.cookie('accessToken', tokens.newAccessToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'none',
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
     maxAge: 2 * 60 * 60 * 1000,
     path: '/',
   });
   res.cookie('refreshToken', tokens.newRefreshToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'none',
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
   });
@@ -405,7 +415,7 @@ app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Ad accounts not found for this user' });
     }
 
-    const token = user.accessToken;
+    const token = user.linkedinToken;
 
     const adAccountNames = await Promise.all(
       user.adAccounts.map(async (account) => {
@@ -494,7 +504,7 @@ app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
   try {
     const response = await axios.get(url, {
       headers: {
-        Authorization: `Bearer ${user.accessToken}`,
+        Authorization: `Bearer ${user.linkedinToken}`,
         'X-RestLi-Protocol-Version': '2.0.0',
         'LinkedIn-Version': '202406',
       },
@@ -660,14 +670,14 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     const db = client.db(process.env.DB_NAME);
     const usersCollection = db.collection('users');
 
-    // 1) Load user and verify token
+    // 1) Load user and get raw LinkedIn OAuth token
     const user = await usersCollection.findOne({ userId });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    const accessToken = await verifyAndRefreshTokenIfNeeded(user);
+    const accessToken = user.linkedinToken;
     if (!accessToken) {
-      return res.status(401).json({ message: 'Invalid or expired token' });
+      return res.status(401).json({ message: 'LinkedIn token not found' });
     }
 
     // 2) Make sure the user actually has that ad account
@@ -751,11 +761,11 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
   try {
     const user = await client.db(process.env.DB_NAME).collection('users').findOne({ linkedinId: req.user.linkedinId });
 
-    if (!user || !user.accessToken) {
-      return res.status(404).json({ error: 'User or access token not found' });
+    if (!user || !user.linkedinToken) {
+      return res.status(404).json({ error: 'User or LinkedIn token not found' });
     }
 
-    const token = user.accessToken;
+    const token = user.linkedinToken;
     const userAdAccountID = accountId.split(':').pop();
 
     const campaignGroupsUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaignGroups?q=search&sortOrder=DESCENDING`;
@@ -1253,10 +1263,10 @@ async function refreshUserAccessToken(refreshToken) {
       { expiresIn: '2h' }
     );
 
-    // Save the new tokens in the database
+    // Save only the new refresh token in the database (do NOT overwrite linkedinToken)
     await db.collection('users').updateOne(
       { userId },
-      { $set: { accessToken: newAccessToken, refreshToken: newRefreshToken } }
+      { $set: { refreshToken: newRefreshToken } }
     );
 
     return { newAccessToken, newRefreshToken };

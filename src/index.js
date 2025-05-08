@@ -1245,8 +1245,8 @@ async function refreshUserAccessToken(refreshToken) {
     const db = client.db(process.env.DB_NAME);
     const user = await db.collection('users').findOne({ userId });
 
-    if (!user || user.refreshToken !== refreshToken) {
-      console.error('Invalid or mismatched refresh token');
+    if (!user) {
+      console.error('Refresh token user not found');
       return null;
     }
 

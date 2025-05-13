@@ -526,15 +526,31 @@ app.get('/api/get-all-changes', authenticateToken, async (req, res) => {
     const userChanges = await db.collection('changes').findOne({ userId });
 
     if (userChanges) {
-      res.json({
-        changes: userChanges.changes[adAccountId] || [],
-        urnInfoMap: userChanges.urnInfoMap || {}
+      // Fetch URN information from the stored urnInfoMap
+      const urnInfoMap = userChanges.urnInfoMap || {};
+
+      // Map human-readable values to URNs in changes
+      const mappedChanges = (userChanges.changes[adAccountId] || []).map((change) => {
+        const mappedChange = { ...change };
+        mappedChange.changes = Object.fromEntries(
+          Object.entries(change.changes).map(([key, value]) => {
+            if (typeof value === 'string' && urnInfoMap[value]) {
+              return [key, urnInfoMap[value]];
+            }
+            if (typeof value === 'object' && value !== null) {
+              return [key, JSON.parse(JSON.stringify(value), (k, v) =>
+                (typeof v === 'string' && urnInfoMap[v]) ? urnInfoMap[v] : v
+              )];
+            }
+            return [key, value];
+          })
+        );
+        return mappedChange;
       });
+
+      res.json({ changes: mappedChanges, urnInfoMap });
     } else {
-      res.json({
-        changes: [],
-        urnInfoMap: {}
-      });
+      res.json({ changes: [], urnInfoMap: {} });
     }
   } catch (error) {
     console.error('Error fetching changes from MongoDB:', error);

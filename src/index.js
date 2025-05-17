@@ -1,3 +1,9 @@
+// Luxon for timezone formatting
+import { DateTime } from 'luxon';
+
+const formatDateWithTimeZone = (date, timeZone) => {
+  return DateTime.fromJSDate(date, { zone: timeZone }).toFormat('MM/dd/yyyy');
+};
 const isProduction = process.env.NODE_ENV === 'production';
 import { MongoClient, ObjectId } from 'mongodb';
 import express from 'express';
@@ -674,9 +680,9 @@ app.post('/api/delete-note', authenticateToken, async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
-// New route to check for changes for a specific user and ad account
+// New route to check for changes for a specific user and ad account, with timeZone
 app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
-  const { userId, adAccountId } = req.body;
+  const { userId, adAccountId, timeZone } = req.body;
   if (!userId || !adAccountId) {
     return res.status(400).json({ message: 'User ID and Ad Account ID are required' });
   }
@@ -720,7 +726,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
         newDifferences.push({
           campaignId: campaign2.id,
           campaign:  campaign2.name,
-          date:      formatDate(new Date()),
+          date:      formatDateWithTimeZone(new Date(), timeZone),
           changes:   { campaignAdded: campaign2.name },
           notes:     campaign2.notes || [],
           _id:       new ObjectId(),
@@ -746,7 +752,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
         newDifferences.push({
           campaignId: campaign2.id,
           campaign:   campaign2.name,
-          date:       formatDate(new Date()),
+          date:       formatDateWithTimeZone(new Date(), timeZone),
           changes,
           notes:      campaign2.notes || [],
           _id:        campaign1._id || new ObjectId(),

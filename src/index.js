@@ -57,17 +57,7 @@ app.use((req, res, next) => {
 });
 
 // Trust Heroku proxy to preserve protocol
-
 app.set('trust proxy', 1);
-
-// Redirect www to non-www
-app.use((req, res, next) => {
-  if (req.headers.host && req.headers.host.startsWith('www.')) {
-    res.redirect(301, 'https://' + req.headers.host.replace(/^www\./, '') + req.url);
-  } else {
-    next();
-  }
-});
 
 // Force HTTPS in production
 if (process.env.NODE_ENV === 'production') {

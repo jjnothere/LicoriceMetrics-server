@@ -60,21 +60,23 @@ app.use((req, res, next) => {
 
 app.set('trust proxy', 1);
 
-// Redirect www to non-www
-app.use((req, res, next) => {
-  if (req.headers.host && req.headers.host.startsWith('www.')) {
-    res.redirect(301, 'https://' + req.headers.host.replace(/^www\./, '') + req.url);
-  } else {
-    next();
-  }
-});
-
-// Force HTTPS in production
+// Force HTTPS and redirect www to non-www in production
 if (process.env.NODE_ENV === 'production') {
   app.use((req, res, next) => {
-    if (req.headers['x-forwarded-proto'] !== 'https') {
-      return res.redirect(`https://${req.headers.host}${req.url}`);
+    const host = req.headers.host;
+    const isHttps = req.headers['x-forwarded-proto'] === 'https';
+
+    // Redirect www to non-www
+    if (host.startsWith('www.')) {
+      const nonWwwHost = host.replace(/^www\./, '');
+      return res.redirect(301, `https://${nonWwwHost}${req.url}`);
     }
+
+    // Redirect HTTP to HTTPS
+    if (!isHttps) {
+      return res.redirect(301, `https://${host}${req.url}`);
+    }
+
     next();
   });
 }

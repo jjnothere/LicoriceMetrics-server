@@ -1580,9 +1580,12 @@ cron.schedule('0 23 * * *', async () => { // runs every day at 2am for example
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');
 });
+// Serve robots.txt dynamically based on the hostname
 app.get('/robots.txt', (req, res) => {
   res.type('text/plain');
-  if (req.hostname.startsWith('app.')) {
+
+  // Check if the subdomain is "app.licoricemetrics.com"
+  if (req.hostname === 'app.licoricemetrics.com') {
     res.send('User-agent: *\nDisallow: /\n');
   } else {
     res.send('User-agent: *\nAllow: /\n');

@@ -29,6 +29,18 @@ dotenv.config(); // Load environment variables
 app.use(express.json());
 app.use(cookieParser());
 
+// Serve robots.txt dynamically based on the hostname
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain');
+
+  // Check if the subdomain is "app.licoricemetrics.com"
+  if (req.hostname === 'app.licoricemetrics.com') {
+    res.send('User-agent: *\nDisallow: /\n');
+  } else {
+    res.send('User-agent: *\nAllow: /\n');
+  }
+});
+
 // Configure CORS
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
@@ -1579,15 +1591,4 @@ cron.schedule('0 23 * * *', async () => { // runs every day at 2am for example
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');
-});
-// Serve robots.txt dynamically based on the hostname
-app.get('/robots.txt', (req, res) => {
-  res.type('text/plain');
-
-  // Check if the subdomain is "app.licoricemetrics.com"
-  if (req.hostname === 'app.licoricemetrics.com') {
-    res.send('User-agent: *\nDisallow: /\n');
-  } else {
-    res.send('User-agent: *\nAllow: /\n');
-  }
 });

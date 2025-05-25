@@ -855,11 +855,11 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
 
 // Save a preset
 app.post('/api/save-preset', authenticateToken, async (req, res) => {
-  const { name, filters, searchText, selectedCampaigns, selectedCampaignIds } = req.body;
+  const { name, selectedCampaigns, selectedCampaignIds } = req.body;
   const userId = req.user.userId;
 
-  if (!name || !filters) {
-    return res.status(400).json({ message: 'Preset name and filters are required' });
+  if (!name) {
+    return res.status(400).json({ message: 'Preset name is required' });
   }
 
   try {
@@ -872,10 +872,8 @@ app.post('/api/save-preset', authenticateToken, async (req, res) => {
         $push: {
           presets: {
             name,
-            filters,
-            searchText,
-            selectedCampaigns: selectedCampaigns || [], // Save selected campaigns
-            selectedCampaignIds: selectedCampaignIds || [] // Save selected campaign IDs
+            selectedCampaigns: selectedCampaigns || [],
+            selectedCampaignIds: selectedCampaignIds || []
           }
         }
       }

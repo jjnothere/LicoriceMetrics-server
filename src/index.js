@@ -733,7 +733,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     }
 
     // 3) Fetch current and LinkedIn campaigns
-    const adCampaigns = await fetchAdCampaigns(userId, accessToken, [adAccountId]);
+    const adCampaigns = await fetchAdCampaigns(user, accessToken, [adAccountId]);
     const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, adAccountId);
     const linkedInCampaigns = adCampaigns[adAccountId]?.campaigns || [];
 
@@ -975,18 +975,33 @@ async function checkForChangesForAllUsers() {
     for (const user of users) {
       const { userId, adAccounts } = user;
 
-      // Verify and refresh token if needed
-      const accessToken = await verifyAndRefreshTokenIfNeeded(user);
-      if (!accessToken) {
-        console.warn(`User ${userId} does not have a valid token, skipping...`);
+      // Use the stored LinkedIn OAuth token directly
+      let linkedInToken = user.linkedinToken;
+      if (!linkedInToken) {
+        console.warn(`No LinkedIn OAuth token for user ${userId}, skipping...`);
         continue;
+      }
+      // Verify LinkedIn token is still valid by calling /v2/me
+      try {
+        await axios.get('https://api.linkedin.com/v2/me', {
+          headers: { Authorization: `Bearer ${linkedInToken}` },
+          timeout: 5000,
+        });
+      } catch (e) {
+        if (e.response && (e.response.status === 401 || e.response.status === 403)) {
+          console.error(`LinkedIn OAuth token expired or invalid for user ${userId}, skipping...`);
+          continue;
+        } else {
+          console.error(`Error verifying LinkedIn token for user ${userId}:`, e.message);
+          continue;
+        }
       }
 
       // Extract all the accountIds for this user
       const accountIds = adAccounts.map((a) => a.accountId);
 
       // 1. Fetch updated ad campaigns & creatives
-      const adCampaigns = await fetchAdCampaigns(userId, accessToken, accountIds);
+      const adCampaigns = await fetchAdCampaigns(user, linkedInToken, accountIds);
 
       // 2. Compare campaigns for each ad account and save differences
       for (const account of adAccounts) {
@@ -1010,7 +1025,11 @@ async function checkForChangesForAllUsers() {
               if (changes.campaignGroup) {
                 const groupId = changes.campaignGroup.newValue?.split(':').pop();
                 if (groupId) {
-                  changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(accessToken, accountId, groupId);
+                  changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(
+                    linkedInToken,
+                    accountId,
+                    groupId
+                  );
                 }
               }
 
@@ -1036,7 +1055,7 @@ async function checkForChangesForAllUsers() {
 
           // Fetch URN info if needed
           const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
-          const urnInfoMap = await fetchUrnInformation(uniqueUrns, accessToken);
+          const urnInfoMap = await fetchUrnInformation(uniqueUrns, linkedInToken);
           newDifferences.forEach((d) => (d.urnInfoMap = urnInfoMap));
 
           // Save the new differences
@@ -1112,7 +1131,8 @@ async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
   }
 }
 
-async function fetchAdCampaigns(userId, accessToken, accountIds) {
+async function fetchAdCampaigns(user, accessToken, accountIds) {
+  const userId = user.userId;
   const db = client.db(process.env.DB_NAME);
   const existingAdCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
   const adCampaigns = {};
@@ -1190,6 +1210,7 @@ async function fetchAdCampaigns(userId, accessToken, accountIds) {
     } catch (error) {
       // Check if it's a 401/403 due to invalid token
       if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+        // Token is invalid, attempt a refresh
         const newAccessToken = await refreshUserAccessToken(user.refreshToken);
         if (newAccessToken) {
           // Update the user's accessToken in DB if not already done in refreshUserAccessToken
@@ -1204,7 +1225,6 @@ async function fetchAdCampaigns(userId, accessToken, accountIds) {
         console.error('Some other error occurred:', error.message);
       }
       console.error(`Error fetching ad campaigns for accountId ${accountId}:`, error);
-      // If error, fallback to existing data
       campaignsWithCreatives = existingAdCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [];
     }
 
@@ -1585,7 +1605,7 @@ const extractUrnsFromValue = (value, urns) => {
 };
 
 // Now, in your cron setup:
-cron.schedule('0 23 * * *', async () => { // runs every day at 2am for example
+cron.schedule('29 22 * * *', async () => { // runs every day at 2am for example
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');

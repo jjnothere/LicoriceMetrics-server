@@ -1077,11 +1077,19 @@ async function checkForChangesForAllUsers() {
 // Save Ad Campaigns to DB
 async function saveAdCampaignsToDB(userId, adCampaigns) {
   const db = client.db(process.env.DB_NAME);
-  await db.collection('adCampaigns').updateOne(
-    { userId },
-    { $set: { adCampaigns } },
-    { upsert: true }
-  );
+  const collection = db.collection('adCampaigns');
+  // Iterate each account and campaign, upserting each as its own document
+  for (const [accountId, data] of Object.entries(adCampaigns)) {
+    const campaigns = data.campaigns || [];
+    for (const campaign of campaigns) {
+      const campaignId = String(campaign.id);
+      await collection.updateOne(
+        { userId, accountId, campaignId },
+        { $set: { userId, accountId, campaignId, campaignData: campaign } },
+        { upsert: true }
+      );
+    }
+  }
 }
 
 // Save changes to DB
@@ -1513,8 +1521,11 @@ async function fetchCampaignGroupNameBackend(token, accountId, groupId) {
 // Fetch current campaigns from our database
 async function fetchCurrentCampaignsFromDB(userId, accountId) {
   const db = client.db(process.env.DB_NAME);
-  const adCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
-  return adCampaignsDoc?.adCampaigns?.[accountId]?.campaigns || [];
+  const collection = db.collection('adCampaigns');
+  // Retrieve all campaign documents for this user and account
+  const docs = await collection.find({ userId, accountId }).toArray();
+  // Return just the raw campaign objects
+  return docs.map(doc => doc.campaignData);
 }
 
 // Function to fetch URN Information

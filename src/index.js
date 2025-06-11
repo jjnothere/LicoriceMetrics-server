@@ -546,167 +546,215 @@ app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
   }
 });
 
+// Aggregated changes by adAccountId from campaign-based documents
 app.get('/api/get-all-changes', authenticateToken, async (req, res) => {
-  const userId = req.user.userId;
   const { adAccountId } = req.query;
 
   try {
     await client.connect();
     const db = client.db(process.env.DB_NAME);
-    const userChanges = await db.collection('changes').findOne({ userId });
 
-    if (userChanges) {
-      // Fetch URN information from the stored urnInfoMap
-      const urnInfoMap = userChanges.urnInfoMap || {};
+    // Fetch all changes documents for this ad account
+    const cursor = db.collection('changes').find({ adAccountId });
+    const docs = await cursor.toArray();
 
-      // Map human-readable values to URNs in changes
-      const mappedChanges = (userChanges.changes[adAccountId] || []).map((change) => {
-        const mappedChange = { ...change };
-        mappedChange.changes = Object.fromEntries(
-          Object.entries(change.changes).map(([key, value]) => {
-            if (typeof value === 'string' && urnInfoMap[value]) {
-              return [key, urnInfoMap[value]];
-            }
-            if (typeof value === 'object' && value !== null) {
-              return [key, JSON.parse(JSON.stringify(value), (k, v) =>
-                (typeof v === 'string' && urnInfoMap[v]) ? urnInfoMap[v] : v
-              )];
-            }
-            return [key, value];
-          })
-        );
-        return mappedChange;
-      });
+    let allChanges = [];
+    let urnInfoMap = {};
 
-      res.json({ changes: mappedChanges, urnInfoMap });
-    } else {
-      res.json({ changes: [], urnInfoMap: {} });
+    for (const doc of docs) {
+      if (Array.isArray(doc.changes)) {
+        allChanges = allChanges.concat(doc.changes);
+      }
+      urnInfoMap = { ...urnInfoMap, ...doc.urnInfoMap };
     }
+
+    allChanges.sort((a, b) => new Date(b.date) - new Date(a.date)); // Sort by date descending
+
+    res.json({ changes: allChanges, urnInfoMap });
   } catch (error) {
-    console.error('Error fetching changes from MongoDB:', error);
+    console.error('Error fetching campaign-based changes from MongoDB:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
-// Add Note Endpoint
-app.post('/api/add-note', authenticateToken, async (req, res) => {
-  const { accountId, campaignId, newNote } = req.body;
-  const userId = req.user.userId;
-
-  if (!accountId || !campaignId || !newNote) {
-    return res.status(400).json({ message: 'All fields are required' });
-  }
-
+// Add Note Endpoint (campaign-based structure)
+// Add Note Endpoint (campaign-based structure)
+app.post('/api/add-note', async (req, res) => {
   try {
-    const db = client.db(process.env.DB_NAME);
-    const changesCollection = db.collection('changes');
-    const noteId = new ObjectId().toHexString(); // Generate a string ID
-    const timestamp = new Date().toISOString();
+    const { campaignId, adAccountId, changeId, note } = req.body;
+    // Logging for debugging query values
+    console.log('Looking for doc with campaignId:', campaignId.toString(), 'and adAccountId:', adAccountId.toString());
 
-    const result = await changesCollection.updateOne(
-      { userId },
-      { $push: { [`changes.${accountId}.$[campaignElem].notes`]: { _id: noteId, note: newNote, timestamp } } },
+    const db = client.db(process.env.DB_NAME);
+    const campaignChangesCollection = db.collection('changes');
+
+    // Print all campaignChanges docs' campaignId and adAccountId for debug
+    const debugDocs = await campaignChangesCollection.find({}).toArray();
+    console.log('All campaignChanges docs:', debugDocs.map(doc => ({
+      campaignId: doc.campaignId,
+      adAccountId: doc.adAccountId
+    })));
+
+    // Find the campaign changes document by string IDs, using String() for normalization
+    const campaignChangesDoc = await campaignChangesCollection.findOne({
+      campaignId: String(campaignId),
+      adAccountId: String(adAccountId)
+    });
+
+    if (!campaignChangesDoc) {
+      console.error('No changes document found');
+      return res.status(404).send('Changes document not found');
+    }
+
+    // Use updateOne with $push to add the note to the correct change's notes array
+    const noteObj = {
+      _id: new ObjectId(),
+      note: note,
+      timestamp: new Date().toISOString()
+    };
+
+    const updateResult = await campaignChangesCollection.updateOne(
       {
-        arrayFilters: [
-          { "campaignElem._id": new ObjectId(campaignId) } // Convert campaignId to ObjectId
-        ]
+        campaignId: String(campaignId),
+        adAccountId: String(adAccountId),
+        "changes._id": new ObjectId(changeId)
+      },
+      {
+        $push: {
+          "changes.$.notes": noteObj
+        }
       }
     );
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).send('Campaign not found');
+    if (updateResult.modifiedCount === 0) {
+      console.error('Change not found in document');
+      return res.status(404).send('Change not found');
     }
 
-    res.json({ noteId, timestamp });
+    return res.status(200).json({ success: true, noteId: noteObj._id, timestamp: noteObj.timestamp });
   } catch (error) {
     console.error('Error adding note:', error);
-    res.status(500).send('Internal Server Error');
+    return res.status(500).send('Server error');
   }
 });
 
-// Edit Note Endpoint
+// Edit Note Endpoint (campaign-based document model)
+// Edit Note Endpoint (campaign-based document model, revised)
 app.post('/api/edit-note', authenticateToken, async (req, res) => {
-  const { accountId, campaignId, noteId, updatedNote } = req.body;
-  const userId = req.user.userId;
-
-  if (!accountId || !campaignId || !noteId || !updatedNote) {
+  // Logging at the top of the route handler
+  console.log('EDIT NOTE ROUTE HIT');
+  console.log('Request body:', req.body);
+  // Update destructuring: accept both campaignId and changeId
+  const { accountId, campaignId, changeId, noteId, newText } = req.body;
+  if (!accountId || !campaignId || !changeId || !noteId || !newText) {
     return res.status(400).json({ message: 'All fields are required' });
   }
-
   try {
     const db = client.db(process.env.DB_NAME);
     const changesCollection = db.collection('changes');
 
-    const result = await changesCollection.updateOne(
-      { userId },
-      {
-        $set: {
-          [`changes.${accountId}.$[campaignElem].notes.$[noteElem].note`]: updatedNote,
-          [`changes.${accountId}.$[campaignElem].notes.$[noteElem].timestamp`]: new Date().toISOString()
-        }
-      },
-      {
-        arrayFilters: [
-          { "campaignElem._id": new ObjectId(campaignId) },
-          { $or: [{ "noteElem._id": noteId }, { "noteElem._id": new ObjectId(noteId) }] } // Match both string and ObjectId formats
-        ]
-      }
-    );
+    // Find campaign doc by adAccountId, campaignId, and changes._id
+    const campaignDoc = await changesCollection.findOne({
+      adAccountId: String(accountId),
+      campaignId: String(campaignId),
+      'changes._id': new ObjectId(changeId)
+    });
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).send('Note not found');
+    // Log whether the campaign doc was found
+    if (!campaignDoc) {
+      console.log(`No campaign document found for campaignId: ${campaignId}, changeId: ${changeId}`);
+      return res.status(404).send('Campaign not found');
+    } else {
+      console.log(`Found campaign document for campaignId: ${campaignId}, changeId: ${changeId}`);
     }
 
-    res.send('Note updated successfully');
+    // Find the correct change object
+    const change = campaignDoc.changes.find((c) => c._id.toString() === changeId);
+    if (!change) {
+      console.log(`No change found with _id: ${changeId}`);
+      return res.status(404).send('Change not found');
+    } else {
+      console.log(`Found change with _id: ${changeId}`);
+    }
+
+    // Find the note and update its text, logging before and after
+    const note = change.notes.find(n => n._id.toString() === noteId);
+    if (note) {
+      console.log(`Editing note with _id: ${noteId}. Old text: "${note.note}", New text: "${newText}"`);
+      note.note = newText;
+      note.timestamp = new Date().toISOString();
+    } else {
+      console.log(`No note found with _id: ${noteId}`);
+      return res.status(404).send('Note not found');
+    }
+    // Save the updated changes array back to the document
+    await changesCollection.updateOne(
+      { _id: campaignDoc._id },
+      { $set: { changes: campaignDoc.changes } }
+    );
+    res.status(200).json({ message: 'Note updated successfully' });
   } catch (error) {
-    console.error('Error updating note:', error);
-    res.status(500).send('Internal Server Error');
+    console.error('[edit-note] Error updating note:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
-// Delete Note Endpoint
-app.post('/api/delete-note', authenticateToken, async (req, res) => {
-  const { accountId, campaignId, noteId } = req.body;
-  const userId = req.user.userId;
-
-  if (!accountId || !campaignId || !noteId) {
-    return res.status(400).json({ message: 'All fields are required' });
-  }
+// Delete Note Endpoint (campaign-based document model)
+app.post('/api/delete-note', async (req, res) => {
+  // Add logs at the beginning of the route handler
+  console.log('DELETE NOTE ROUTE HIT');
+  console.log('Request body:', req.body);
+  const { accountId, campaignId: changeId, noteId } = req.body;
+  console.log('Parsed variables:', { accountId, changeId, noteId });
 
   try {
     const db = client.db(process.env.DB_NAME);
     const changesCollection = db.collection('changes');
-
-    // Attempt to match both string and ObjectId formats for noteId
-    const result = await changesCollection.updateOne(
-      { userId },
-      {
-        $pull: {
-          [`changes.${accountId}.$[campaignElem].notes`]: {
-            $or: [{ _id: noteId }, { _id: new ObjectId(noteId) }]
-          }
-        }
-      },
-      {
-        arrayFilters: [
-          { "campaignElem._id": new ObjectId(campaignId) } // Ensure campaignId is an ObjectId
-        ]
-      }
-    );
-
-    if (result.modifiedCount === 0) {
-      return res.status(404).send('Note not found');
+    // Find the campaign document using adAccountId and changes._id
+    const campaignDoc = await changesCollection.findOne({
+      adAccountId: accountId,
+      'changes._id': new ObjectId(changeId)
+    });
+    // Log for debugging
+    if (!campaignDoc) {
+      console.log('No campaign document found for adAccountId:', accountId, 'and changeId:', changeId);
+      return res.status(404).json({ message: 'Campaign not found' });
+    } else {
+      console.log('Found campaign document:', campaignDoc._id, 'for changeId:', changeId);
     }
 
-    res.send('Note deleted successfully');
-  } catch (error) {
-    console.error('Error deleting note:', error);
-    res.status(500).send('Internal Server Error');
+    // Find and update the correct change entry within the changes array
+    const change = campaignDoc.changes.find(
+      (c) => c._id.toString() === changeId
+    );
+    if (!change) {
+      return res.status(404).json({ message: 'Change entry not found' });
+    }
+    const oldNotesLen = Array.isArray(change.notes) ? change.notes.length : 0;
+    change.notes = (change.notes || []).filter(n => n._id.toString() !== noteId);
+    if (change.notes.length === oldNotesLen) {
+      return res.status(404).json({ message: 'Note not found or not deleted.' });
+    }
+
+    // Save the updated changes array back to the document
+    await changesCollection.updateOne(
+      { _id: campaignDoc._id },
+      { $set: { changes: campaignDoc.changes } }
+    );
+
+    // Log before sending the success response
+    console.log('Successfully deleted note with ID:', noteId, 'from change:', changeId);
+    res.status(200).json({ message: 'Note deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting note:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 });
 // New route to check for changes for a specific user and ad account, with timeZone
 app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
-  const { userId, adAccountId, timeZone } = req.body;
+  const { adAccountId, timeZone } = req.body;
+  const userId = req.user.userId;
+
   if (!userId || !adAccountId) {
     return res.status(400).json({ message: 'User ID and Ad Account ID are required' });
   }
@@ -1075,6 +1123,7 @@ async function checkForChangesForAllUsers() {
 }
 
 // Save Ad Campaigns to DB
+// Now each campaign document includes an array of userIds instead of a single userId.
 async function saveAdCampaignsToDB(userId, adCampaigns) {
   const db = client.db(process.env.DB_NAME);
   const collection = db.collection('adCampaigns');
@@ -1084,58 +1133,65 @@ async function saveAdCampaignsToDB(userId, adCampaigns) {
     for (const campaign of campaigns) {
       const campaignId = String(campaign.id);
       await collection.updateOne(
-        { userId, accountId, campaignId },
-        { $set: { userId, accountId, campaignId, campaignData: campaign } },
+        { accountId, campaignId },
+        {
+          $set: { accountId, campaignId, campaignData: campaign },
+          $addToSet: { userIds: userId }
+        },
         { upsert: true }
       );
     }
   }
 }
 
-// Save changes to DB
+// Save changes to DB (per-campaign document model)
 async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
-  if (!adAccountId) {
-    console.error("Error: adAccountId is undefined.");
+  if (!adAccountId || !Array.isArray(changes)) {
+    console.error("Invalid inputs for saving changes.");
     return;
   }
 
   const db = client.db(process.env.DB_NAME);
   const collection = db.collection('changes');
+  const normalizedAdAccountId = String(adAccountId);
 
-  const changesWithIds = changes.map(change => ({
-    ...change,
-    _id: change._id ? new ObjectId(change._id) : new ObjectId(),
-  }));
+  for (const change of changes) {
+    // Normalize campaignId and adAccountId fields
+    const campaignId = String(change.campaignId);
+    const adAccountIdNorm = normalizedAdAccountId;
+    const _id = change._id ? new ObjectId(change._id) : new ObjectId();
 
-  const existingUserChanges = await collection.findOne({ userId });
+    // Always use { campaignId, adAccountId } as the query
+    const existingDoc = await collection.findOne({ campaignId, adAccountId: adAccountIdNorm });
 
-  if (existingUserChanges) {
-    const existingAdAccountChanges = existingUserChanges.changes[adAccountId] || [];
-
-    const uniqueChanges = changesWithIds.filter(newChange =>
-      !existingAdAccountChanges.some(existingChange =>
-        (existingChange._id && existingChange._id.equals(newChange._id)) ||
-        (existingChange.campaign === newChange.campaign &&
-          existingChange.date === newChange.date &&
-          JSON.stringify(existingChange.changes) === JSON.stringify(newChange.changes))
-      )
-    );
-
-    if (uniqueChanges.length > 0) {
-      await collection.updateOne(
-        { userId },
-        {
-          $push: { [`changes.${adAccountId}`]: { $each: uniqueChanges } },
-          $set: { urnInfoMap: { ...existingUserChanges.urnInfoMap, ...urnInfoMap } }
-        }
+    if (existingDoc) {
+      const alreadyExists = existingDoc.changes.some(existingChange =>
+        (existingChange._id && existingChange._id.equals(_id)) ||
+        (
+          existingChange.date === change.date &&
+          existingChange.campaign === change.campaign &&
+          JSON.stringify(existingChange.changes) === JSON.stringify(change.changes) &&
+          JSON.stringify(existingChange.notes || []) === JSON.stringify(change.notes || [])
+        )
       );
+
+      if (!alreadyExists) {
+        await collection.updateOne(
+          { campaignId, adAccountId: adAccountIdNorm },
+          {
+            $push: { changes: { ...change, _id } },
+            $set: { urnInfoMap: { ...existingDoc.urnInfoMap, ...urnInfoMap } }
+          }
+        );
+      }
+    } else {
+      await collection.insertOne({
+        campaignId,
+        adAccountId: adAccountIdNorm,
+        changes: [{ ...change, _id }],
+        urnInfoMap
+      });
     }
-  } else {
-    await collection.insertOne({
-      userId,
-      changes: { [adAccountId]: changesWithIds },
-      urnInfoMap
-    });
   }
 }
 
@@ -1518,13 +1574,17 @@ async function fetchCampaignGroupNameBackend(token, accountId, groupId) {
   }
 }
 
-// Fetch current campaigns from our database
+// Fetch current campaigns from our database (support multiple users per campaign)
 async function fetchCurrentCampaignsFromDB(userId, accountId) {
   const db = client.db(process.env.DB_NAME);
   const collection = db.collection('adCampaigns');
-  // Retrieve all campaign documents for this user and account
-  const docs = await collection.find({ userId, accountId }).toArray();
-  // Return just the raw campaign objects
+
+  // Find all campaign docs for this account where userId is in userIds array
+  const docs = await collection.find({
+    accountId,
+    userIds: userId
+  }).toArray();
+
   return docs.map(doc => doc.campaignData);
 }
 

@@ -26,6 +26,25 @@ const PORT = process.env.PORT || 8000;
 
 dotenv.config(); // Load environment variables
 
+// Helper to refresh LinkedIn OAuth access tokens when expired
+async function refreshLinkedInAccessToken(linkedinRefreshToken) {
+  const params = new URLSearchParams();
+  params.append('grant_type', 'refresh_token');
+  params.append('refresh_token', linkedinRefreshToken);
+  params.append('client_id', process.env.LINKEDIN_CLIENT_ID);
+  params.append('client_secret', process.env.LINKEDIN_CLIENT_SECRET);
+
+  const response = await axios.post(
+    'https://www.linkedin.com/oauth/v2/accessToken',
+    params.toString(),
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+  );
+  return {
+    accessToken: response.data.access_token,
+    refreshToken: response.data.refresh_token || linkedinRefreshToken
+  };
+}
+
 app.use(express.json());
 app.use(cookieParser());
 
@@ -162,7 +181,7 @@ passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
   callbackURL: callbackURL,
-  scope: ['r_ads_reporting', 'r_ads', 'r_basicprofile', 'r_organization_social'],
+  scope: ['r_ads_reporting', 'r_ads', 'r_basicprofile', 'r_organization_social', 'rw_organization_admin'],
 }, (accessToken, refreshToken, profile, done) => {
   return done(null, { profile, accessToken, refreshToken });
 }));
@@ -194,7 +213,7 @@ app.get('/auth/linkedin/callback',
   passport.authenticate('linkedin', { failureRedirect: '/' }),
   async (req, res) => {
     try {
-      const { accessToken, profile } = req.user;
+      const { accessToken, refreshToken, profile } = req.user;
 
       if (!accessToken) {
         return res.status(400).json({ error: 'Access token not found' });
@@ -206,7 +225,6 @@ app.get('/auth/linkedin/callback',
       const linkedinId = profile.id;
       const firstName = profile.name.givenName;
       const lastName = profile.name.familyName;
-
 
       const adAccountsUrl = `https://api.linkedin.com/rest/adAccountUsers?q=authenticatedUser`;
       const adAccountsResponse = await axios.get(adAccountsUrl, {
@@ -222,7 +240,6 @@ app.get('/auth/linkedin/callback',
         role: account.role,
       }));
 
-
       const existingUser = await usersCollection.findOne({ linkedinId });
       let user;
 
@@ -232,6 +249,7 @@ app.get('/auth/linkedin/callback',
           {
             $set: {
               linkedinToken: accessToken,
+              linkedinRefreshToken: refreshToken,
               firstName,
               lastName,
               lastLogin: new Date(),
@@ -244,6 +262,7 @@ app.get('/auth/linkedin/callback',
         const newUser = {
           linkedinId,
           linkedinToken: accessToken,
+          linkedinRefreshToken: refreshToken,
           firstName,
           lastName,
           userId: uuidv4(),
@@ -260,13 +279,12 @@ app.get('/auth/linkedin/callback',
         { expiresIn: '2h' }
       );
 
-      const refreshToken = jwt.sign(
+      const refreshTokenJwt = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
         process.env.REFRESH_TOKEN_SECRET,
         { expiresIn: '7d' }
       );
-      await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken } });
-
+      await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken: refreshTokenJwt } });
 
       // Set HttpOnly, secure, cross-site cookies for OAuth tokens
       res.cookie('accessToken', jwtAccessToken, {
@@ -276,7 +294,7 @@ app.get('/auth/linkedin/callback',
         path: '/',
         maxAge: 2 * 60 * 60 * 1000, // 2 hours
       });
-      res.cookie('refreshToken', refreshToken, {
+      res.cookie('refreshToken', refreshTokenJwt, {
         httpOnly: true,
         secure: isProduction,
         sameSite: isProduction ? 'none' : 'lax',
@@ -287,7 +305,6 @@ app.get('/auth/linkedin/callback',
       const frontendUrl = process.env.NODE_ENV === 'production'
         ? process.env.FRONTEND_URL_PROD
         : process.env.FRONTEND_URL_DEV;
-
 
       // Redirect to the frontend history page after successful login
       if (!res.headersSent) {
@@ -488,12 +505,14 @@ app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'No valid ad accounts found for this user' });
     }
 
-    // Update the user document with the fetched account names if needed
-    await client.db(process.env.DB_NAME).collection('users').updateOne(
-      { linkedinId: req.user.linkedinId },
-      { $set: { 'adAccounts.$[elem].name': { $each: validAdAccounts.map(acc => acc.name) } } },
-      { arrayFilters: [{ 'elem.accountId': { $in: validAdAccounts.map(acc => acc.id) } }] }
-    );
+    // Update each adAccount element with its fetched name
+    const usersCollection = client.db(process.env.DB_NAME).collection('users');
+    for (const accountData of validAdAccounts) {
+      await usersCollection.updateOne(
+        { linkedinId: req.user.linkedinId, 'adAccounts.accountId': accountData.id },
+        { $set: { 'adAccounts.$.name': accountData.name } }
+      );
+    }
 
     res.json({ adAccounts: validAdAccounts });
   } catch (error) {
@@ -1037,8 +1056,18 @@ async function checkForChangesForAllUsers() {
         });
       } catch (e) {
         if (e.response && (e.response.status === 401 || e.response.status === 403)) {
-          console.error(`LinkedIn OAuth token expired or invalid for user ${userId}, skipping...`);
-          continue;
+          console.log(`LinkedIn OAuth token expired for user ${userId}, refreshing...`);
+          try {
+            const tokens = await refreshLinkedInAccessToken(user.linkedinRefreshToken);
+            linkedInToken = tokens.accessToken;
+            await usersCollection.updateOne(
+              { userId: user.userId },
+              { $set: { linkedinToken: tokens.accessToken, linkedinRefreshToken: tokens.refreshToken } }
+            );
+          } catch (refreshError) {
+            console.error(`Failed to refresh LinkedIn token for user ${userId}:`, refreshError);
+            continue;
+          }
         } else {
           console.error(`Error verifying LinkedIn token for user ${userId}:`, e.message);
           continue;
@@ -1082,6 +1111,7 @@ async function checkForChangesForAllUsers() {
               }
 
               const difference = {
+                campaignId: campaign2.id,
                 campaign: campaign2.name,
                 date: formatDate(new Date()),
                 changes,
@@ -1092,6 +1122,7 @@ async function checkForChangesForAllUsers() {
             } else if (!campaign1) {
               // New campaign
               newDifferences.push({
+                campaignId: campaign2.id,
                 campaign: campaign2.name,
                 date: formatDate(new Date()),
                 changes: { campaignAdded: campaign2.name },
@@ -1101,13 +1132,11 @@ async function checkForChangesForAllUsers() {
             }
           }
 
-          // Fetch URN info if needed
           const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
           const urnInfoMap = await fetchUrnInformation(uniqueUrns, linkedInToken);
-          newDifferences.forEach((d) => (d.urnInfoMap = urnInfoMap));
 
-          // Save the new differences
-          await saveChangesToDB(userId, accountId, newDifferences);
+          // Save the new differences with the fetched URN mapping
+          await saveChangesToDB(userId, accountId, newDifferences, urnInfoMap);
 
         } catch (error) {
           console.error(`Error in checking changes for user ${userId}, account ${accountId}:`, error);
@@ -1237,28 +1266,37 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
             // Process each creative
             campaign.creatives = await Promise.all(
               creativesResponse.data.elements.map(async (creative) => {
+                // 1) Standard textAd headline
                 if (creative.content?.textAd?.headline) {
                   creative.name = creative.content.textAd.headline;
-                } else if (creative.content?.reference) {
-                  const referenceId = creative.content.reference;
-                  try {
-                    const referenceApiUrl = `https://api.linkedin.com/rest/posts/${encodeURIComponent(referenceId)}`;
-                    const referenceResponse = await axios.get(referenceApiUrl, {
-                      headers: {
-                        Authorization: `Bearer ${token}`,
-                        'X-RestLi-Protocol-Version': '2.0.0',
-                        'LinkedIn-Version': '202307',
-                      },
-                    });
-                    creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
-                  } catch (error) {
-                    console.error(`Error fetching reference details for creative ${creative.id}:`, error);
+                }
+                // 2) Only fetch real “share” URNs
+                else {
+                  const referenceApiUrl = creative.content?.reference
+                    ? `https://api.linkedin.com/rest/posts/${encodeURIComponent(creative.content.reference)}`
+                    : null;
+                  if (creative.content?.reference?.startsWith('urn:li:share:')) {
+                    const referenceId = creative.content.reference;
+                    try {
+                      const referenceResponse = await axios.get(referenceApiUrl, {
+                        headers: {
+                          Authorization: `Bearer ${token}`,
+                          'X-RestLi-Protocol-Version': '2.0.0',
+                          'LinkedIn-Version': '202307',
+                        },
+                      });
+                      creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
+                    } catch (error) {
+                      const status = error.response?.status;
+                      console.error(`[fetchAdCampaigns] Share fetch failed for ${referenceId}: HTTP ${status} - ${error.message}`);
+                      creative.name = 'Unnamed Creative';
+                    }
+                  }
+                  // 3) Everything else (in‐mail, docs, unsupported URNs)
+                  else {
                     creative.name = 'Unnamed Creative';
                   }
-                } else {
-                  creative.name = 'Unnamed Creative';
                 }
-
                 return creative;
               })
             );
@@ -1676,7 +1714,7 @@ const extractUrnsFromValue = (value, urns) => {
 };
 
 // Now, in your cron setup:
-cron.schedule('29 22 * * *', async () => { // runs every day at 2am for example
+cron.schedule('49 20 * * *', async () => { // runs every day at 2am for example
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');

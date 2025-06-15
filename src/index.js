@@ -1225,6 +1225,48 @@ async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
 }
 
 async function fetchAdCampaigns(user, accessToken, accountIds) {
+  // ── Only fetch shares for orgs the user administers ─────────────
+  let allowedOrgs = [];
+  try {
+    const aclRes = await axios.get(
+      'https://api.linkedin.com/rest/organizationalEntityAcls',
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-RestLi-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202307'
+        },
+        params: { q: 'roleAssignee', role: 'ADMINISTRATOR', state: 'APPROVED' }
+      }
+    );
+    allowedOrgs = (aclRes.data.elements || []).map(e => e.organization);
+  } catch (e) {
+    console.error('Error fetching org ACLs:', e.message);
+  }
+
+  // Map each adAccount ID to its owning organization URN
+  const accountToOrg = {};
+  await Promise.all(
+    accountIds.map(async acctId => {
+      try {
+        const resp = await axios.get(
+          `https://api.linkedin.com/rest/adAccounts/${acctId}?fields=reference`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'X-RestLi-Protocol-Version': '2.0.0',
+              'LinkedIn-Version': '202307'
+            }
+          }
+        );
+        accountToOrg[acctId] = resp.data.reference;
+      } catch {
+        accountToOrg[acctId] = null;
+      }
+    })
+  );
+  // ─────────────────────────────────────────────────────────────────
+
   const userId = user.userId;
   const db = client.db(process.env.DB_NAME);
   const existingAdCampaignsDoc = await db.collection('adCampaigns').findOne({ userId });
@@ -1276,19 +1318,26 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
                     ? `https://api.linkedin.com/rest/posts/${encodeURIComponent(creative.content.reference)}`
                     : null;
                   if (creative.content?.reference?.startsWith('urn:li:share:')) {
-                    const referenceId = creative.content.reference;
-                    try {
-                      const referenceResponse = await axios.get(referenceApiUrl, {
-                        headers: {
-                          Authorization: `Bearer ${token}`,
-                          'X-RestLi-Protocol-Version': '2.0.0',
-                          'LinkedIn-Version': '202307',
-                        },
-                      });
-                      creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
-                    } catch (error) {
-                      const status = error.response?.status;
-                      console.error(`[fetchAdCampaigns] Share fetch failed for ${referenceId}: HTTP ${status} - ${error.message}`);
+                    // only fetch share details if user administers this org
+                    const orgURN = accountToOrg[accountId];
+                    if (allowedOrgs.includes(orgURN)) {
+                      try {
+                        const referenceResponse = await axios.get(referenceApiUrl, {
+                          headers: {
+                            Authorization: `Bearer ${token}`,
+                            'X-RestLi-Protocol-Version': '2.0.0',
+                            'LinkedIn-Version': '202307',
+                          },
+                        });
+                        creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
+                      } catch (error) {
+                        const status = error.response?.status;
+                        if (status && status !== 403) {
+                          console.error(`[fetchAdCampaigns] Share fetch failed for ${creative.content.reference}: HTTP ${status} - ${error.message}`);
+                        }
+                        creative.name = 'Unnamed Creative';
+                      }
+                    } else {
                       creative.name = 'Unnamed Creative';
                     }
                   }
@@ -1714,8 +1763,10 @@ const extractUrnsFromValue = (value, urns) => {
 };
 
 // Now, in your cron setup:
-cron.schedule('49 20 * * *', async () => { // runs every day at 2am for example
+cron.schedule('0 21 * * *', async () => {
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');
+}, {
+  timezone: 'America/Chicago'
 });

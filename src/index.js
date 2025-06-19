@@ -231,7 +231,7 @@ app.get('/auth/linkedin/callback',
         headers: {
           Authorization: `Bearer ${accessToken}`,
           'X-RestLi-Protocol-Version': '2.0.0',
-          'LinkedIn-Version': '202406',
+          'LinkedIn-Version': '202506',
         },
       });
 
@@ -474,7 +474,7 @@ app.get('/api/ad-account-name', authenticateToken, async (req, res) => {
             headers: {
               Authorization: `Bearer ${token}`,
               'X-RestLi-Protocol-Version': '2.0.0',
-              'LinkedIn-Version': '202406',
+              'LinkedIn-Version': '202506',
             },
           });
 
@@ -555,7 +555,7 @@ app.get('/api/linkedin/chart-data', authenticateToken, async (req, res) => {
       headers: {
         Authorization: `Bearer ${user.linkedinToken}`,
         'X-RestLi-Protocol-Version': '2.0.0',
-        'LinkedIn-Version': '202406',
+        'LinkedIn-Version': '202506',
       },
     });
     res.json(response.data);
@@ -889,14 +889,14 @@ app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (r
         headers: {
           Authorization: `Bearer ${token}`,
           'X-RestLi-Protocol-Version': '2.0.0',
-          'LinkedIn-Version': '202406',
+          'LinkedIn-Version': '202506',
         },
       }),
       axios.get(campaignsUrl, {
         headers: {
           Authorization: `Bearer ${token}`,
           'X-RestLi-Protocol-Version': '2.0.0',
-          'LinkedIn-Version': '202406',
+          'LinkedIn-Version': '202506',
         },
       }),
     ]);
@@ -1286,7 +1286,7 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
         headers: {
           Authorization: `Bearer ${token}`,
           'X-RestLi-Protocol-Version': '2.0.0',
-          'LinkedIn-Version': '202406',
+          'LinkedIn-Version': '202506',
         },
       });
 
@@ -1301,7 +1301,7 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
               headers: {
                 Authorization: `Bearer ${token}`,
                 'X-RestLi-Protocol-Version': '2.0.0',
-                'LinkedIn-Version': '202406',
+                'LinkedIn-Version': '202506',
               },
             });
 
@@ -1651,7 +1651,7 @@ async function fetchCampaignGroupNameBackend(token, accountId, groupId) {
       headers: {
         Authorization: `Bearer ${token}`,
         'X-RestLi-Protocol-Version': '2.0.0',
-        'LinkedIn-Version': '202406',
+        'LinkedIn-Version': '202506',
       },
     });
     return response.data?.name || 'Unknown';
@@ -1705,7 +1705,7 @@ async function fetchUrnInfoBackend(token, urnType, urnId) {
         headers: {
           Authorization: `Bearer ${token}`,
           'X-RestLi-Protocol-Version': '2.0.0',
-          'LinkedIn-Version': '202406',
+          'LinkedIn-Version': '202506',
         },
       });
       return res.data.name || `Unknown (${urnType})`;
@@ -1718,7 +1718,7 @@ async function fetchUrnInfoBackend(token, urnType, urnId) {
       const res = await axios.get(apiUrl, {
         headers: {
           Authorization: `Bearer ${token}`,
-          'LinkedIn-Version': '202406',
+          'LinkedIn-Version': '202506',
         },
       });
       const element = res.data.elements?.[0];

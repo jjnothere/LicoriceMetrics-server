@@ -1209,7 +1209,7 @@ async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
           { campaignId, adAccountId: adAccountIdNorm },
           {
             $push: { changes: { ...change, _id } },
-            $set: { urnInfoMap: { ...existingDoc.urnInfoMap, ...urnInfoMap } }
+            $set: { urnInfoMap: urnInfoMap }
           }
         );
       }
@@ -1295,7 +1295,8 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
         response.data.elements.map(async (campaign) => {
           try {
             const campaignId = 'urn:li:sponsoredCampaign:' + campaign.id; 
-            const creativesApiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/creatives?q=criteria&campaigns=List(${encodeURIComponent(campaignId)})&fields=id,isServing,content`;
+            // Request name field as well
+            const creativesApiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/creatives?q=criteria&campaigns=List(${encodeURIComponent(campaignId)})&fields=id,isServing,name,content`;
 
             const creativesResponse = await axios.get(creativesApiUrl, {
               headers: {
@@ -1308,6 +1309,10 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
             // Process each creative
             campaign.creatives = await Promise.all(
               creativesResponse.data.elements.map(async (creative) => {
+                // If API already returns a creative-level name, use it directly
+                if (creative.name) {
+                  return creative;
+                }
                 // 1) Standard textAd headline
                 if (creative.content?.textAd?.headline) {
                   creative.name = creative.content.textAd.headline;
@@ -1343,6 +1348,23 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
                   }
                   // 3) Everything else (in‐mail, docs, unsupported URNs)
                   else {
+                    creative.name = 'Unnamed Creative';
+                  }
+                }
+                // --- Fallback: try fetching Text-Ad headline by creative ID if still no name ---
+                // Place this block just before the final return creative;
+                if (!creative.name) {
+                  try {
+                    const textAdUrl = `https://api.linkedin.com/rest/adCreatives/${encodeURIComponent(creative.id)}?fields=content.textAd.headline`;
+                    const textAdResp = await axios.get(textAdUrl, {
+                      headers: {
+                        Authorization: `Bearer ${token}`,
+                        'X-RestLi-Protocol-Version': '2.0.0',
+                        'LinkedIn-Version': '202506',
+                      },
+                    });
+                    creative.name = textAdResp.data.content?.textAd?.headline || 'Unnamed Creative';
+                  } catch (err) {
                     creative.name = 'Unnamed Creative';
                   }
                 }

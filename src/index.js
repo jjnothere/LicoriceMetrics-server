@@ -1032,6 +1032,8 @@ app.listen(PORT, () => {
 // The main function that runs in the cron job
 async function checkForChangesForAllUsers() {
   try {
+    // Always use Central Time for the date
+    const centralDate = DateTime.now().setZone('America/Chicago').toFormat('MM/dd/yyyy');
     await client.connect();
     const db = client.db(process.env.DB_NAME);
     const usersCollection = db.collection('users');
@@ -1113,7 +1115,7 @@ async function checkForChangesForAllUsers() {
               const difference = {
                 campaignId: campaign2.id,
                 campaign: campaign2.name,
-                date: formatDate(new Date()),
+                date: centralDate,
                 changes,
                 notes: campaign2.notes || [],
                 _id: campaign1 && campaign1._id ? new ObjectId(campaign1._id) : new ObjectId(),
@@ -1124,7 +1126,7 @@ async function checkForChangesForAllUsers() {
               newDifferences.push({
                 campaignId: campaign2.id,
                 campaign: campaign2.name,
-                date: formatDate(new Date()),
+                date: centralDate,
                 changes: { campaignAdded: campaign2.name },
                 notes: [],
                 _id: new ObjectId(),

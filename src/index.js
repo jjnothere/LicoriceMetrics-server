@@ -1207,11 +1207,12 @@ async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
       );
 
       if (!alreadyExists) {
+        const mergedUrnInfoMap = { ...existingDoc.urnInfoMap, ...urnInfoMap };
         await collection.updateOne(
           { campaignId, adAccountId: adAccountIdNorm },
           {
             $push: { changes: { ...change, _id } },
-            $set: { urnInfoMap: urnInfoMap }
+            $set: { urnInfoMap: mergedUrnInfoMap }
           }
         );
       }

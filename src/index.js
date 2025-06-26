@@ -602,17 +602,12 @@ app.post('/api/add-note', async (req, res) => {
   try {
     const { campaignId, adAccountId, changeId, note } = req.body;
     // Logging for debugging query values
-    console.log('Looking for doc with campaignId:', campaignId.toString(), 'and adAccountId:', adAccountId.toString());
 
     const db = client.db(process.env.DB_NAME);
     const campaignChangesCollection = db.collection('changes');
 
     // Print all campaignChanges docs' campaignId and adAccountId for debug
     const debugDocs = await campaignChangesCollection.find({}).toArray();
-    console.log('All campaignChanges docs:', debugDocs.map(doc => ({
-      campaignId: doc.campaignId,
-      adAccountId: doc.adAccountId
-    })));
 
     // Find the campaign changes document by string IDs, using String() for normalization
     const campaignChangesDoc = await campaignChangesCollection.findOne({
@@ -809,8 +804,10 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
 
     // 4) Compare campaigns
     for (const campaign2 of linkedInCampaigns) {
-      // Try to find it in our DB
-      const campaign1 = currentCampaigns.find(c => String(c.id) === String(campaign2.id));
+      // Try to find it in our DB, using correct campaignData path for MongoDB docs
+      const campaign1 = currentCampaigns.find(c =>
+        String(c.id ?? c.campaignData?.id) === String(campaign2.id)
+      );
 
       // A) BRAND-NEW campaign: push only the “added” message and skip diffs
       if (!campaign1) {
@@ -825,8 +822,9 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
         continue;
       }
 
-      // B) EXISTING campaign: compute detailed diffs
-      const changes = findDifferences(campaign1, campaign2, urns);
+// B) EXISTING campaign: compute detailed diffs
+      const baseCampaign1 = campaign1.campaignData ?? campaign1;
+      const changes = findDifferences(baseCampaign1, campaign2, urns);
       if (Object.keys(changes).length > 0) {
         // If campaignGroup changed, fetch its human name
         if (changes.campaignGroup) {
@@ -1097,8 +1095,11 @@ async function checkForChangesForAllUsers() {
 
           // Compare campaigns
           for (const campaign2 of linkedInCampaigns) {
-            const campaign1 = currentCampaigns.find((c) => String(c.id) === String(campaign2.id));
-            const changes = findDifferences(campaign1 || {}, campaign2, urns);
+            const campaign1 = currentCampaigns.find(c =>
+              String(c.id ?? c.campaignData?.id) === String(campaign2.id)
+            );
+            const baseCampaign1 = (campaign1 && (campaign1.campaignData ?? campaign1)) || {};
+            const changes = findDifferences(baseCampaign1, campaign2, urns);
 
             if (Object.keys(changes).length > 0) {
               if (changes.campaignGroup) {
@@ -1175,7 +1176,6 @@ async function saveAdCampaignsToDB(userId, adCampaigns) {
   }
 }
 
-// Save changes to DB (per-campaign document model)
 async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
   if (!adAccountId || !Array.isArray(changes)) {
     console.error("Invalid inputs for saving changes.");
@@ -1528,10 +1528,22 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
 
       // Handle amount key
       if (key === 'amount' && val1 !== val2) {
-        diffs[key] = {
-          oldValue: `$${val1}`,
-          newValue: `$${val2}`,
-        };
+        // If one value is null, format as added/removed instead of oldValue/newValue
+        if (val1 === null) {
+          diffs[key] = {
+            added: `$${val2}`,
+          };
+        } else if (val2 === null) {
+          diffs[key] = {
+            removed: `$${val1}`,
+          };
+        } else {
+          // Both values exist, use oldValue/newValue format
+          diffs[key] = {
+            oldValue: `$${val1}`,
+            newValue: `$${val2}`,
+          };
+        }
         continue;
       }
 
@@ -1628,17 +1640,30 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
           diffs[key] = nestedDiffs;
         }
       } else if (JSON.stringify(val1) !== JSON.stringify(val2)) {
-        diffs[key] = {
-          oldValue: replaceUrnWithInfo(val1, urnInfoMap),
-          newValue: replaceUrnWithInfo(val2, urnInfoMap),
-        };
-        extractUrnsFromValue(val1, urns);
-        extractUrnsFromValue(val2, urns);
+        // If one value is null, format as added/removed instead of oldValue/newValue
+        if (val1 === null) {
+          diffs[key] = {
+            added: replaceUrnWithInfo(val2, urnInfoMap),
+          };
+          extractUrnsFromValue(val2, urns);
+        } else if (val2 === null) {
+          diffs[key] = {
+            removed: replaceUrnWithInfo(val1, urnInfoMap),
+          };
+          extractUrnsFromValue(val1, urns);
+        } else {
+          // Both values exist, use oldValue/newValue format
+          diffs[key] = {
+            oldValue: replaceUrnWithInfo(val1, urnInfoMap),
+            newValue: replaceUrnWithInfo(val2, urnInfoMap),
+          };
+          extractUrnsFromValue(val1, urns);
+          extractUrnsFromValue(val2, urns);
+        }
       }
     } else {
       diffs[key] = {
-        oldValue: replaceUrnWithInfo(obj1[key], urnInfoMap),
-        newValue: null,
+        removed: replaceUrnWithInfo(obj1[key], urnInfoMap),
       };
       extractUrnsFromValue(obj1[key], urns);
     }
@@ -1650,13 +1675,11 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
     if (!Object.prototype.hasOwnProperty.call(obj1, key)) {
       if (key === 'amount') {
         diffs[key] = {
-          oldValue: null,
-          newValue: `$${obj2[key]}`,
+          added: `$${obj2[key]}`,
         };
       } else {
         diffs[key] = {
-          oldValue: null,
-          newValue: replaceUrnWithInfo(obj2[key], urnInfoMap),
+          added: replaceUrnWithInfo(obj2[key], urnInfoMap),
         };
       }
       extractUrnsFromValue(obj2[key], urns);

@@ -778,7 +778,12 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     const db = client.db(process.env.DB_NAME);
     const usersCollection = db.collection('users');
 
-    // 1) Load user and get raw LinkedIn OAuth token
+    // --- 1) Fetch knownCampaigns for this adAccountId ---
+    const knownColl = db.collection('knownCampaigns');
+    const knownDocs = await knownColl.find({ adAccountId: String(adAccountId) }).toArray();
+    const knownIds = new Set(knownDocs.map(d => d.campaignId));
+
+    // 2) Load user and get raw LinkedIn OAuth token
     const user = await usersCollection.findOne({ userId });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
@@ -788,13 +793,13 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
       return res.status(401).json({ message: 'LinkedIn token not found' });
     }
 
-    // 2) Make sure the user actually has that ad account
+    // 3) Make sure the user actually has that ad account
     const account = user.adAccounts.find(acc => acc.accountId === adAccountId);
     if (!account) {
       return res.status(404).json({ message: 'Ad account not found for this user' });
     }
 
-    // 3) Fetch current and LinkedIn campaigns
+    // 4) Fetch current and LinkedIn campaigns
     const adCampaigns = await fetchAdCampaigns(user, accessToken, [adAccountId]);
     const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, adAccountId);
     const linkedInCampaigns = adCampaigns[adAccountId]?.campaigns || [];
@@ -802,15 +807,11 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     const newDifferences = [];
     const urns = [];
 
-    // 4) Compare campaigns
+    // 5) Compare campaigns
     for (const campaign2 of linkedInCampaigns) {
-      // Try to find it in our DB, using correct campaignData path for MongoDB docs
-      const campaign1 = currentCampaigns.find(c =>
-        String(c.id ?? c.campaignData?.id) === String(campaign2.id)
-      );
-
-      // A) BRAND-NEW campaign: push only the “added” message and skip diffs
-      if (!campaign1) {
+      // --- Use knownCampaigns to determine if truly new ---
+      const isNew = !knownIds.has(String(campaign2.id));
+      if (isNew) {
         newDifferences.push({
           campaignId: campaign2.id,
           campaign:  campaign2.name,
@@ -819,37 +820,46 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
           notes:     campaign2.notes || [],
           _id:       new ObjectId(),
         });
+        // Mark as known
+        await knownColl.insertOne({ adAccountId: String(adAccountId), campaignId: String(campaign2.id) });
         continue;
       }
 
-// B) EXISTING campaign: compute detailed diffs
-      const baseCampaign1 = campaign1.campaignData ?? campaign1;
-      const changes = findDifferences(baseCampaign1, campaign2, urns);
-      if (Object.keys(changes).length > 0) {
-        // If campaignGroup changed, fetch its human name
-        if (changes.campaignGroup) {
-          const groupId = changes.campaignGroup.newValue?.split(':').pop();
-          if (groupId) {
-            changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(
-              accessToken,
-              adAccountId,
-              groupId
-            );
+      // Find in DB for diffing
+      const campaign1 = currentCampaigns.find(c =>
+        String(c.id ?? c.campaignData?.id) === String(campaign2.id)
+      );
+      // Only diff if not new (i.e., already known)
+      if (campaign1) {
+        const baseCampaign1 = campaign1.campaignData ?? campaign1;
+        const changes = findDifferences(baseCampaign1, campaign2, urns);
+        if (Object.keys(changes).length > 0) {
+          // If campaignGroup changed, fetch its human name
+          if (changes.campaignGroup) {
+            const groupId = changes.campaignGroup.newValue?.split(':').pop();
+            if (groupId) {
+              changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(
+                accessToken,
+                adAccountId,
+                groupId
+              );
+            }
           }
-        }
 
-        newDifferences.push({
-          campaignId: campaign2.id,
-          campaign:   campaign2.name,
-          date:       formatDateWithTimeZone(new Date(), timeZone),
-          changes,
-          notes:      campaign2.notes || [],
-          _id:        campaign1._id || new ObjectId(),
-        });
+          newDifferences.push({
+            campaignId: campaign2.id,
+            campaign:   campaign2.name,
+            date:       formatDateWithTimeZone(new Date(), timeZone),
+            changes,
+            notes:      campaign2.notes || [],
+            _id:        campaign1._id || new ObjectId(),
+          });
+        }
       }
+      // If not found in DB but not new (should not happen if knownCampaigns is correct), do nothing.
     }
 
-    // 5) Enrich URNs, save everything back to Mongo
+    // 6) Enrich URNs, save everything back to Mongo
     const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
     const urnInfoMap = await fetchUrnInformation(uniqueUrns, accessToken);
 
@@ -1207,13 +1217,15 @@ async function saveChangesToDB(userId, adAccountId, changes, urnInfoMap) {
       );
 
       if (!alreadyExists) {
-        const mergedUrnInfoMap = { ...existingDoc.urnInfoMap, ...urnInfoMap };
+        // Only update urnInfoMap if there are new URNs
+        const hasNewUrns = Object.keys(urnInfoMap).length > 0;
+        const updateOps = { $push: { changes: { ...change, _id } } };
+        if (hasNewUrns) {
+          updateOps.$set = { urnInfoMap: { ...existingDoc.urnInfoMap, ...urnInfoMap } };
+        }
         await collection.updateOne(
           { campaignId, adAccountId: adAccountIdNorm },
-          {
-            $push: { changes: { ...change, _id } },
-            $set: { urnInfoMap: mergedUrnInfoMap }
-          }
+          updateOps
         );
       }
     } else {
@@ -1528,7 +1540,7 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
 
       // Handle amount key
       if (key === 'amount' && val1 !== val2) {
-        // If one value is null, format as added/removed instead of oldValue/newValue
+x        // If one value is null, format as added/removed instead of oldValue/newValue
         if (val1 === null) {
           diffs[key] = {
             added: `$${val2}`,

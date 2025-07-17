@@ -822,6 +822,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
         });
         // Mark as known
         await knownColl.insertOne({ adAccountId: String(adAccountId), campaignId: String(campaign2.id) });
+        knownIds.add(String(campaign2.id)); // Add to in-memory set after inserting
         continue;
       }
 
@@ -829,6 +830,10 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
       const campaign1 = currentCampaigns.find(c =>
         String(c.id ?? c.campaignData?.id) === String(campaign2.id)
       );
+      // If not new and not found in DB, but is known, skip processing to avoid duplicate entries
+      if (!campaign1 && knownIds.has(String(campaign2.id))) {
+        continue;
+      }
       // Only diff if not new (i.e., already known)
       if (campaign1) {
         const baseCampaign1 = campaign1.campaignData ?? campaign1;
@@ -1094,6 +1099,12 @@ async function checkForChangesForAllUsers() {
       for (const account of adAccounts) {
         const accountId = account.accountId;
         try {
+          // Fetch knownCampaigns for this adAccountId
+          const db = client.db(process.env.DB_NAME);
+          const knownColl = db.collection('knownCampaigns');
+          const knownDocs = await knownColl.find({ adAccountId: String(accountId) }).toArray();
+          const knownIds = new Set(knownDocs.map(d => d.campaignId));
+
           // Fetch current campaigns from DB
           const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, accountId);
 
@@ -1105,35 +1116,9 @@ async function checkForChangesForAllUsers() {
 
           // Compare campaigns
           for (const campaign2 of linkedInCampaigns) {
-            const campaign1 = currentCampaigns.find(c =>
-              String(c.id ?? c.campaignData?.id) === String(campaign2.id)
-            );
-            const baseCampaign1 = (campaign1 && (campaign1.campaignData ?? campaign1)) || {};
-            const changes = findDifferences(baseCampaign1, campaign2, urns);
-
-            if (Object.keys(changes).length > 0) {
-              if (changes.campaignGroup) {
-                const groupId = changes.campaignGroup.newValue?.split(':').pop();
-                if (groupId) {
-                  changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(
-                    linkedInToken,
-                    accountId,
-                    groupId
-                  );
-                }
-              }
-
-              const difference = {
-                campaignId: campaign2.id,
-                campaign: campaign2.name,
-                date: centralDate,
-                changes,
-                notes: campaign2.notes || [],
-                _id: campaign1 && campaign1._id ? new ObjectId(campaign1._id) : new ObjectId(),
-              };
-              newDifferences.push(difference);
-            } else if (!campaign1) {
-              // New campaign
+            // --- Use knownCampaigns to determine if truly new ---
+            const isNew = !knownIds.has(String(campaign2.id));
+            if (isNew) {
               newDifferences.push({
                 campaignId: campaign2.id,
                 campaign: campaign2.name,
@@ -1142,7 +1127,46 @@ async function checkForChangesForAllUsers() {
                 notes: [],
                 _id: new ObjectId(),
               });
+              await knownColl.insertOne({ adAccountId: String(accountId), campaignId: String(campaign2.id) });
+              knownIds.add(String(campaign2.id));
+              continue;
             }
+
+            // Find in DB for diffing
+            const campaign1 = currentCampaigns.find(c =>
+              String(c.id ?? c.campaignData?.id) === String(campaign2.id)
+            );
+            // If not new and not found in DB, but is known, skip processing to avoid duplicate entries
+            if (!campaign1 && knownIds.has(String(campaign2.id))) {
+              continue;
+            }
+            // Only diff if not new (i.e., already known)
+            if (campaign1) {
+              const baseCampaign1 = campaign1.campaignData ?? campaign1;
+              const changes = findDifferences(baseCampaign1, campaign2, urns);
+              if (Object.keys(changes).length > 0) {
+                if (changes.campaignGroup) {
+                  const groupId = changes.campaignGroup.newValue?.split(':').pop();
+                  if (groupId) {
+                    changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(
+                      linkedInToken,
+                      accountId,
+                      groupId
+                    );
+                  }
+                }
+
+                newDifferences.push({
+                  campaignId: campaign2.id,
+                  campaign: campaign2.name,
+                  date: centralDate,
+                  changes,
+                  notes: campaign2.notes || [],
+                  _id: campaign1._id || new ObjectId(),
+                });
+              }
+            }
+            // If not found in DB but not new (should not happen if knownCampaigns is correct), do nothing.
           }
 
           const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
@@ -1823,7 +1847,7 @@ const extractUrnsFromValue = (value, urns) => {
 };
 
 // Now, in your cron setup:
-cron.schedule('0 21 * * *', async () => {
+cron.schedule('16 17 * * *', async () => {
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');

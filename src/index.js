@@ -767,6 +767,7 @@ app.post('/api/delete-note', async (req, res) => {
 // New route to check for changes for a specific user and ad account, with timeZone
 app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
   const { adAccountId, timeZone } = req.body;
+  const adAccountIdStr = String(adAccountId);
   const userId = req.user.userId;
 
   if (!userId || !adAccountId) {
@@ -780,7 +781,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
 
     // --- 1) Fetch knownCampaigns for this adAccountId ---
     const knownColl = db.collection('knownCampaigns');
-    const knownDocs = await knownColl.find({ adAccountId: String(adAccountId) }).toArray();
+    const knownDocs = await knownColl.find({ adAccountId: adAccountIdStr }).toArray();
     const knownIds = new Set(knownDocs.map(d => d.campaignId));
 
     // 2) Load user and get raw LinkedIn OAuth token
@@ -794,26 +795,27 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     }
 
     // 3) Make sure the user actually has that ad account
-    const account = user.adAccounts.find(acc => acc.accountId === adAccountId);
+    const account = user.adAccounts.find(acc => acc.accountId === adAccountIdStr);
     if (!account) {
       return res.status(404).json({ message: 'Ad account not found for this user' });
     }
 
     // 4) Fetch current and LinkedIn campaigns
-    const adCampaigns = await fetchAdCampaigns(user, accessToken, [adAccountId]);
-    const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, adAccountId);
-    const linkedInCampaigns = adCampaigns[adAccountId]?.campaigns || [];
+    const adCampaigns = await fetchAdCampaigns(user, accessToken, [adAccountIdStr]);
+    const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, adAccountIdStr);
+    const linkedInCampaigns = adCampaigns[adAccountIdStr]?.campaigns || [];
 
     const newDifferences = [];
     const urns = [];
 
     // 5) Compare campaigns
     for (const campaign2 of linkedInCampaigns) {
+      const campaign2IdStr = String(campaign2.id);
       // --- Use knownCampaigns to determine if truly new ---
-      const isNew = !knownIds.has(String(campaign2.id));
+      const isNew = !knownIds.has(campaign2IdStr);
       if (isNew) {
         newDifferences.push({
-          campaignId: campaign2.id,
+          campaignId: campaign2IdStr,
           campaign:  campaign2.name,
           date:      formatDateWithTimeZone(new Date(), timeZone),
           changes:   { campaignAdded: campaign2.name },
@@ -821,17 +823,17 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
           _id:       new ObjectId(),
         });
         // Mark as known
-        await knownColl.insertOne({ adAccountId: String(adAccountId), campaignId: String(campaign2.id) });
-        knownIds.add(String(campaign2.id)); // Add to in-memory set after inserting
+        await knownColl.insertOne({ adAccountId: adAccountIdStr, campaignId: campaign2IdStr });
+        knownIds.add(campaign2IdStr); // Add to in-memory set after inserting
         continue;
       }
 
       // Find in DB for diffing
       const campaign1 = currentCampaigns.find(c =>
-        String(c.id ?? c.campaignData?.id) === String(campaign2.id)
+        String(c.id ?? c.campaignData?.id) === campaign2IdStr
       );
       // If not new and not found in DB, but is known, skip processing to avoid duplicate entries
-      if (!campaign1 && knownIds.has(String(campaign2.id))) {
+      if (!campaign1 && knownIds.has(campaign2IdStr)) {
         continue;
       }
       // Only diff if not new (i.e., already known)
@@ -845,14 +847,14 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
             if (groupId) {
               changes.campaignGroup.newValue = await fetchCampaignGroupNameBackend(
                 accessToken,
-                adAccountId,
+                adAccountIdStr,
                 groupId
               );
             }
           }
 
           newDifferences.push({
-            campaignId: campaign2.id,
+            campaignId: campaign2IdStr,
             campaign:   campaign2.name,
             date:       formatDateWithTimeZone(new Date(), timeZone),
             changes,
@@ -868,7 +870,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     const uniqueUrns = Array.from(new Set(urns.map(JSON.stringify))).map(JSON.parse);
     const urnInfoMap = await fetchUrnInformation(uniqueUrns, accessToken);
 
-    await saveChangesToDB(userId, adAccountId, newDifferences, urnInfoMap);
+    await saveChangesToDB(userId, adAccountIdStr, newDifferences, urnInfoMap);
     await saveAdCampaignsToDB(userId, adCampaigns);
 
     res.status(200).json({ message: 'Changes checked and saved successfully' });
@@ -1847,7 +1849,7 @@ const extractUrnsFromValue = (value, urns) => {
 };
 
 // Now, in your cron setup:
-cron.schedule('0 21 * * *', async () => {
+cron.schedule('39 18 * * *', async () => {
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');

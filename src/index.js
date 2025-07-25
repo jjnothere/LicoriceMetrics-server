@@ -1849,7 +1849,7 @@ const extractUrnsFromValue = (value, urns) => {
 };
 
 // Now, in your cron setup:
-cron.schedule('39 18 * * *', async () => {
+cron.schedule('0 21 * * *', async () => {
   console.log('Checking for changes for all users...');
   await checkForChangesForAllUsers();
   console.log('Done checking for changes for all users');

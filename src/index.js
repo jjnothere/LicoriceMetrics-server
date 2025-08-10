@@ -22,6 +22,7 @@ import MongoStore from 'connect-mongo';
 import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
+
 const PORT = process.env.PORT || 8000;
 
 dotenv.config(); // Load environment variables
@@ -1566,7 +1567,7 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
 
       // Handle amount key
       if (key === 'amount' && val1 !== val2) {
-x        // If one value is null, format as added/removed instead of oldValue/newValue
+        // If one value is null, format as added/removed instead of oldValue/newValue
         if (val1 === null) {
           diffs[key] = {
             added: `$${val2}`,
@@ -1711,6 +1712,44 @@ x        // If one value is null, format as added/removed instead of oldValue/ne
     if (key === 'version') continue;
 
     if (!Object.prototype.hasOwnProperty.call(obj1, key)) {
+      // Normalize cases where a whole OR group was newly added/removed, e.g.
+      // include.and['4'] = { added: { or: { 'urn:li:adTargetingFacet:jobFunctions': ['urn:li:function:15'] } } }
+      // exclude        = { added: { or: { 'urn:li:adTargetingFacet:employers':   ['urn:li:organization:104413'] } } }
+      if (
+        (key === 'added' || key === 'removed') &&
+        obj2[key] && typeof obj2[key] === 'object' &&
+        obj2[key].or && typeof obj2[key].or === 'object'
+      ) {
+        const group = obj2[key].or;
+        for (const facet in group) {
+          const vals = group[facet];
+
+          if (Array.isArray(vals)) {
+            // Flatten to facet-level shape so the UI renders cleanly
+            // diffs['urn:li:adTargetingFacet:jobFunctions'] = { added: ['Marketing'] }
+            const mapped = vals.map(v => replaceUrnWithInfo(v, urnInfoMap));
+            diffs[facet] = { ...(diffs[facet] || {}), [key]: mapped };
+            vals.forEach(v => extractUrnsFromValue(v, urns));
+          } else if (vals && typeof vals === 'object') {
+            // Support nested { added:[...], removed:[...] } objects under a facet
+            const arrAdded = Array.isArray(vals.added) ? vals.added : null;
+            const arrRemoved = Array.isArray(vals.removed) ? vals.removed : null;
+
+            if (arrAdded) {
+              const mappedAdded = arrAdded.map(v => replaceUrnWithInfo(v, urnInfoMap));
+              diffs[facet] = { ...(diffs[facet] || {}), added: mappedAdded };
+              arrAdded.forEach(v => extractUrnsFromValue(v, urns));
+            }
+            if (arrRemoved) {
+              const mappedRemoved = arrRemoved.map(v => replaceUrnWithInfo(v, urnInfoMap));
+              diffs[facet] = { ...(diffs[facet] || {}), removed: mappedRemoved };
+              arrRemoved.forEach(v => extractUrnsFromValue(v, urns));
+            }
+          }
+        }
+        // We've normalized this branch; skip the generic handler below
+        continue;
+      }
       if (key === 'amount') {
         diffs[key] = {
           added: `$${obj2[key]}`,

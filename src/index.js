@@ -1,3 +1,9 @@
+// Helper to validate invite codes (beta access)
+const isInviteValid = (code) => {
+  if (!code) return false;
+  const list = (process.env.BETA_CODES || '').split(',').map(s => s.trim()).filter(Boolean);
+  return list.includes(code.trim());
+};
 // Luxon for timezone formatting
 import { DateTime } from 'luxon';
 
@@ -78,6 +84,11 @@ app.use(session({
     mongoUrl: process.env.MONGODB_URI,
     collectionName: 'sessions',
   }),
+  cookie: {
+    httpOnly: true,
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    secure: process.env.NODE_ENV === 'production',
+  },
 }));
 
 // Add logging to confirm session store is working
@@ -193,12 +204,16 @@ app.get('/auth/linkedin', (req, res, next) => {
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
   res.set('Surrogate-Control', 'no-store');
+  // capture invite code from query and stash in session for the callback
+  if (req.session) {
+    req.session.invite = req.query.invite || req.session.invite || '';
+  }
   try {
     next();
   } catch (error) {
     res.status(500).send('Internal Server Error');
   }
-}, passport.authenticate('linkedin'));
+}, (req, res, next) => passport.authenticate('linkedin', { state: (req.session && req.session.invite) || '' })(req, res, next));
 
 // LinkedIn callback route
 app.get('/auth/linkedin/callback',
@@ -215,6 +230,14 @@ app.get('/auth/linkedin/callback',
   async (req, res) => {
     try {
       const { accessToken, refreshToken, profile } = req.user;
+
+      // Enforce beta invite code
+      const inviteFromSession = (req.session ? req.session.invite : null) || req.query.state || req.query.invite || null;
+      if (!isInviteValid(inviteFromSession)) {
+        // Clear any partial session info and deny access
+        if (req.session) req.session.invite = null;
+        return res.status(403).send('Beta access only. Invalid or missing invite code.');
+      }
 
       if (!accessToken) {
         return res.status(400).json({ error: 'Access token not found' });
@@ -302,6 +325,9 @@ app.get('/auth/linkedin/callback',
         path: '/',
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       });
+
+      // After successful login, clear invite from session so it can't be reused
+      if (req.session) req.session.invite = null;
 
       const frontendUrl = process.env.NODE_ENV === 'production'
         ? process.env.FRONTEND_URL_PROD

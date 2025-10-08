@@ -34,6 +34,108 @@ const PORT = process.env.PORT || 8000;
 dotenv.config(); // Load environment variables
 
 // Helper to refresh LinkedIn OAuth access tokens when expired
+// ─── Group diff helper ─────────────────────────────────────────────────────────
+function findGroupDifferences(oldGroup, newGroup) {
+  const changes = {};
+  if (!oldGroup || !newGroup) return changes;
+  const fieldsToCheck = [
+    'name',
+    'status',
+    'servingStatuses',
+    'runSchedule',
+    'objectiveType',
+    'pacingStrategy',
+    'dailyBudget',
+    'lifetimeBudget',
+  ];
+  for (const key of fieldsToCheck) {
+    const oldVal = oldGroup[key];
+    const newVal = newGroup[key];
+    if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+      changes[key] = { oldValue: oldVal, newValue: newVal };
+    }
+  }
+  return changes;
+}
+// Fetch campaign groups for an ad account (mirrors fetchAdCampaigns)
+async function fetchAdCampaignGroups(user, accessToken, accountIds) {
+  const adCampaignGroups = {};
+  for (const accountId of accountIds) {
+    const userAdAccountID = accountId.split(':').pop();
+    const token = accessToken;
+    const groupsApiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaignGroups?q=search&sortOrder=DESCENDING`;
+    try {
+      const response = await axios.get(groupsApiUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-RestLi-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202506',
+        },
+      });
+      adCampaignGroups[accountId] = { groups: response.data.elements || [] };
+    } catch (e) {
+      console.error('Error fetching campaign groups for account', accountId, e.message);
+      adCampaignGroups[accountId] = { groups: [] };
+    }
+  }
+  return adCampaignGroups;
+}
+// Save campaign groups to DB (mirrors saveAdCampaignsToDB)
+async function saveCampaignGroupsToDB(userId, adCampaignGroups) {
+  const db = client.db(process.env.DB_NAME);
+  const collection = db.collection('adCampaignGroups');
+  for (const [accountId, data] of Object.entries(adCampaignGroups)) {
+    const groups = data.groups || [];
+    for (const group of groups) {
+      const groupId = String(group.id);
+      await collection.updateOne(
+        { accountId, groupId },
+        {
+          $set: { accountId, groupId, groupData: group },
+          $addToSet: { userIds: userId }
+        },
+        { upsert: true }
+      );
+    }
+  }
+}
+
+// Save group changes to DB (mirrors saveChangesToDB)
+async function saveGroupChangesToDB(userId, adAccountId, changes) {
+  if (!adAccountId || !Array.isArray(changes)) return;
+  const db = client.db(process.env.DB_NAME);
+  const collection = db.collection('groupChanges');
+  const normalizedAdAccountId = String(adAccountId);
+
+  for (const change of changes) {
+    const groupId = String(change.groupId);
+    const _id = change._id ? new ObjectId(change._id) : new ObjectId();
+    const existingDoc = await collection.findOne({ groupId, adAccountId: normalizedAdAccountId });
+    if (existingDoc) {
+      const alreadyExists = existingDoc.changes.some(existingChange =>
+        (existingChange._id && existingChange._id.equals(_id)) ||
+        (
+          existingChange.date === change.date &&
+          existingChange.group === change.group &&
+          JSON.stringify(existingChange.changes) === JSON.stringify(change.changes) &&
+          JSON.stringify(existingChange.notes || []) === JSON.stringify(change.notes || [])
+        )
+      );
+      if (!alreadyExists) {
+        await collection.updateOne(
+          { groupId, adAccountId: normalizedAdAccountId },
+          { $push: { changes: { ...change, _id } } }
+        );
+      }
+    } else {
+      await collection.insertOne({
+        groupId,
+        adAccountId: normalizedAdAccountId,
+        changes: [{ ...change, _id }]
+      });
+    }
+  }
+}
 async function refreshLinkedInAccessToken(linkedinRefreshToken) {
   const params = new URLSearchParams();
   params.append('grant_type', 'refresh_token');
@@ -900,10 +1002,141 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     await saveChangesToDB(userId, adAccountIdStr, newDifferences, urnInfoMap);
     await saveAdCampaignsToDB(userId, adCampaigns);
 
+    // ─── Also compare Campaign Groups ───────────────────────────────
+    const adCampaignGroupsMap = await fetchAdCampaignGroups(user, accessToken, [adAccountIdStr]);
+    const linkedInGroups = adCampaignGroupsMap[adAccountIdStr]?.groups || [];
+
+    // Load stored groups for comparison
+    const groupsColl = client.db(process.env.DB_NAME).collection('adCampaignGroups');
+    const existingGroupsDocs = await groupsColl.find({ accountId: adAccountIdStr }).toArray();
+    const existingGroups = existingGroupsDocs.map((d) => d.groupData);
+
+    const groupKnownColl = client.db(process.env.DB_NAME).collection('knownGroups');
+    const knownGroupDocs = await groupKnownColl.find({ adAccountId: adAccountIdStr }).toArray();
+    const knownGroupIds = new Set(knownGroupDocs.map(d => d.groupId));
+
+    const groupDifferences = [];
+
+    for (const g2 of linkedInGroups) {
+      const g2Id = String(g2.id);
+      const isNewGroup = !knownGroupIds.has(g2Id);
+      if (isNewGroup) {
+        groupDifferences.push({
+          groupId: g2Id,
+          group: g2.name,
+          date: formatDateWithTimeZone(new Date(), timeZone),
+          changes: { groupAdded: g2.name },
+          notes: [],
+          _id: new ObjectId(),
+        });
+        await groupKnownColl.insertOne({ adAccountId: adAccountIdStr, groupId: g2Id });
+        knownGroupIds.add(g2Id);
+        continue;
+      }
+      const g1 = existingGroups.find(x => String(x?.id) === g2Id);
+      if (!g1 && knownGroupIds.has(g2Id)) {
+        continue;
+      }
+      if (g1) {
+        const diff = findGroupDifferences(g1, g2);
+        if (Object.keys(diff).length > 0) {
+          groupDifferences.push({
+            groupId: g2Id,
+            group: g2.name,
+            date: formatDateWithTimeZone(new Date(), timeZone),
+            changes: diff,
+            notes: [],
+            _id: new ObjectId(),
+          });
+        }
+      }
+    }
+
+    // Save groups & group changes
+    await saveCampaignGroupsToDB(userId, { [adAccountIdStr]: { groups: linkedInGroups } });
+    await saveGroupChangesToDB(userId, adAccountIdStr, groupDifferences);
+
     res.status(200).json({ message: 'Changes checked and saved successfully' });
   } catch (error) {
     console.error('Error in /api/check-for-changes route:', error);
     res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+// ─── Group Changes: list all for an ad account ─────────────────────
+app.get('/api/get-all-group-changes', authenticateToken, async (req, res) => {
+  const { adAccountId } = req.query;
+  try {
+    const db = client.db(process.env.DB_NAME);
+    const cursor = db.collection('groupChanges').find({ adAccountId: String(adAccountId) });
+    const docs = await cursor.toArray();
+    let allChanges = [];
+    for (const doc of docs) {
+      if (Array.isArray(doc.changes)) allChanges = allChanges.concat(doc.changes);
+    }
+    allChanges.sort((a, b) => new Date(b.date) - new Date(a.date));
+    res.json({ changes: allChanges });
+  } catch (e) {
+    console.error('Error fetching group changes:', e);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+// ─── Group Notes: add/edit/delete ───────────────────────────────────
+app.post('/api/group/add-note', authenticateToken, async (req, res) => {
+  try {
+    const { groupId, adAccountId, changeId, note } = req.body;
+    const db = client.db(process.env.DB_NAME);
+    const coll = db.collection('groupChanges');
+    const noteObj = { _id: new ObjectId(), note, timestamp: new Date().toISOString() };
+    const result = await coll.updateOne(
+      { groupId: String(groupId), adAccountId: String(adAccountId), 'changes._id': new ObjectId(changeId) },
+      { $push: { 'changes.$.notes': noteObj } }
+    );
+    if (result.modifiedCount === 0) return res.status(404).send('Change not found');
+    res.status(200).json({ success: true, noteId: noteObj._id, timestamp: noteObj.timestamp });
+  } catch (e) {
+    console.error('Error adding group note:', e);
+    res.status(500).send('Server error');
+  }
+});
+
+app.post('/api/group/edit-note', authenticateToken, async (req, res) => {
+  try {
+    const { adAccountId, groupId, changeId, noteId, newText } = req.body;
+    const db = client.db(process.env.DB_NAME);
+    const coll = db.collection('groupChanges');
+    const doc = await coll.findOne({ adAccountId: String(adAccountId), groupId: String(groupId), 'changes._id': new ObjectId(changeId) });
+    if (!doc) return res.status(404).send('Group not found');
+    const change = doc.changes.find(c => c._id.toString() === String(changeId));
+    if (!change) return res.status(404).send('Change not found');
+    const note = (change.notes || []).find(n => n._id.toString() === String(noteId));
+    if (!note) return res.status(404).send('Note not found');
+    note.note = newText; note.timestamp = new Date().toISOString();
+    await coll.updateOne({ _id: doc._id }, { $set: { changes: doc.changes } });
+    res.status(200).json({ message: 'Note updated successfully' });
+  } catch (e) {
+    console.error('Error editing group note:', e);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+app.post('/api/group/delete-note', authenticateToken, async (req, res) => {
+  try {
+    const { adAccountId, changeId, noteId } = req.body;
+    const db = client.db(process.env.DB_NAME);
+    const coll = db.collection('groupChanges');
+    const doc = await coll.findOne({ adAccountId: String(adAccountId), 'changes._id': new ObjectId(changeId) });
+    if (!doc) return res.status(404).json({ message: 'Group not found' });
+    const change = doc.changes.find(c => c._id.toString() === String(changeId));
+    if (!change) return res.status(404).json({ message: 'Change entry not found' });
+    const oldLen = (change.notes || []).length;
+    change.notes = (change.notes || []).filter(n => n._id.toString() !== String(noteId));
+    if (change.notes.length === oldLen) return res.status(404).json({ message: 'Note not found or not deleted.' });
+    await coll.updateOne({ _id: doc._id }, { $set: { changes: doc.changes } });
+    res.status(200).json({ message: 'Note deleted successfully' });
+  } catch (e) {
+    console.error('Error deleting group note:', e);
+    res.status(500).json({ message: 'Internal server error' });
   }
 });
 app.get('/api/linkedin/linkedin-ad-campaign-groups', authenticateToken, async (req, res) => {
@@ -1203,6 +1436,54 @@ async function checkForChangesForAllUsers() {
 
           // Save the new differences with the fetched URN mapping
           await saveChangesToDB(userId, accountId, newDifferences, urnInfoMap);
+
+          // ─── Campaign Groups ───────────────────────────────────────
+          const groupsMap = await fetchAdCampaignGroups(user, linkedInToken, [accountId]);
+          const linkedInGroups = groupsMap[accountId]?.groups || [];
+
+          const groupsColl = client.db(process.env.DB_NAME).collection('adCampaignGroups');
+          const existingGroupsDocs = await groupsColl.find({ accountId }).toArray();
+          const existingGroups = existingGroupsDocs.map(d => d.groupData);
+
+          const knownGroupsColl = client.db(process.env.DB_NAME).collection('knownGroups');
+          const knownGroups = await knownGroupsColl.find({ adAccountId: String(accountId) }).toArray();
+          const knownGroupIds = new Set(knownGroups.map(d => d.groupId));
+
+          const groupDiffs = [];
+          for (const g2 of linkedInGroups) {
+            const g2Id = String(g2.id);
+            const isNew = !knownGroupIds.has(g2Id);
+            if (isNew) {
+              groupDiffs.push({
+                groupId: g2Id,
+                group: g2.name,
+                date: centralDate,
+                changes: { groupAdded: g2.name },
+                notes: [],
+                _id: new ObjectId(),
+              });
+              await knownGroupsColl.insertOne({ adAccountId: String(accountId), groupId: g2Id });
+              knownGroupIds.add(g2Id);
+              continue;
+            }
+            const g1 = existingGroups.find(x => String(x?.id) === g2Id);
+            if (!g1 && knownGroupIds.has(g2Id)) continue;
+            if (g1) {
+              const diff = findGroupDifferences(g1, g2);
+              if (Object.keys(diff).length > 0) {
+                groupDiffs.push({
+                  groupId: g2Id,
+                  group: g2.name,
+                  date: centralDate,
+                  changes: diff,
+                  notes: [],
+                  _id: new ObjectId(),
+                });
+              }
+            }
+          }
+          await saveCampaignGroupsToDB(userId, { [accountId]: { groups: linkedInGroups } });
+          await saveGroupChangesToDB(userId, accountId, groupDiffs);
 
         } catch (error) {
           console.error(`Error in checking changes for user ${userId}, account ${accountId}:`, error);

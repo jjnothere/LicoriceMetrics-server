@@ -1666,32 +1666,32 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
                 if (creative.content?.textAd?.headline) {
                   creative.name = creative.content.textAd.headline;
                 }
-                // 2) Only fetch real “share” URNs
+                // 2) Always try to fetch the post metadata for share URNs
                 else {
                   const referenceApiUrl = creative.content?.reference
                     ? `https://api.linkedin.com/rest/posts/${encodeURIComponent(creative.content.reference)}`
                     : null;
                   if (creative.content?.reference?.startsWith('urn:li:share:')) {
-                    // only fetch share details if user administers this org
                     const orgURN = accountToOrg[accountId];
-                    if (allowedOrgs.includes(orgURN)) {
-                      try {
-                        const referenceResponse = await axios.get(referenceApiUrl, {
-                          headers: {
-                            Authorization: `Bearer ${token}`,
-                            'X-RestLi-Protocol-Version': '2.0.0',
-                            'LinkedIn-Version': '202307',
-                          },
-                        });
-                        creative.name = referenceResponse.data.adContext?.dscName || 'Unnamed Creative';
-                      } catch (error) {
-                        const status = error.response?.status;
-                        if (status && status !== 403) {
-                          console.error(`[fetchAdCampaigns] Share fetch failed for ${creative.content.reference}: HTTP ${status} - ${error.message}`);
-                        }
-                        creative.name = 'Unnamed Creative';
+                    try {
+                      const referenceResponse = await axios.get(referenceApiUrl, {
+                        headers: {
+                          Authorization: `Bearer ${token}`,
+                          'X-RestLi-Protocol-Version': '2.0.0',
+                          'LinkedIn-Version': '202307',
+                        },
+                      });
+                      // Use adContext.dscName, commentary, or content.article.title as fallback
+                      creative.name =
+                        referenceResponse.data.adContext?.dscName ||
+                        referenceResponse.data.content?.article?.title ||
+                        referenceResponse.data.commentary ||
+                        'Unnamed Creative';
+                    } catch (error) {
+                      const status = error.response?.status;
+                      if (status && status !== 403) {
+                        console.error(`[fetchAdCampaigns] Share fetch failed for ${creative.content.reference}: HTTP ${status} - ${error.message}`);
                       }
-                    } else {
                       creative.name = 'Unnamed Creative';
                     }
                   }
@@ -1701,7 +1701,6 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
                   }
                 }
                 // --- Fallback: try fetching Text-Ad headline by creative ID if still no name ---
-                // Place this block just before the final return creative;
                 if (!creative.name) {
                   try {
                     const textAdUrl = `https://api.linkedin.com/rest/adCreatives/${encodeURIComponent(creative.id)}?fields=content.textAd.headline`;

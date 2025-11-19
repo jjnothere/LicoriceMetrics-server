@@ -57,6 +57,196 @@ function findGroupDifferences(oldGroup, newGroup) {
   }
   return changes;
 }
+
+// Helper to enrich creatives with author type + readable name
+// New implementation: prefers explicit author URN (from post/share), falls back to createdBy/lastModifiedBy, and uses /people endpoint for person names.
+async function buildPostAuthorMeta(creative, user, token, explicitAuthorUrn) {
+  try {
+    // Prefer author from the post/share payload if provided
+    const authorUrn = explicitAuthorUrn || creative.createdBy || creative.lastModifiedBy;
+
+    if (!authorUrn || typeof authorUrn !== 'string') {
+      return { postAuthorType: null, postAuthorName: null };
+    }
+
+    // Person author (profile / personal post)
+    if (authorUrn.startsWith('urn:li:person:')) {
+      const personId = authorUrn.split(':').pop();
+      let firstName = '';
+      let lastName = '';
+
+      // If this is the logged-in user, we already know their name
+      if (user && user.linkedinId && user.linkedinId === personId) {
+        firstName = user.firstName || '';
+        lastName = user.lastName || '';
+      } else {
+        // Otherwise, fetch from LinkedIn people API
+        try {
+          const peopleUrl = `https://api.linkedin.com/rest/people/(id:${personId})`;
+          const resp = await axios.get(peopleUrl, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'X-RestLi-Protocol-Version': '2.0.0',
+              'LinkedIn-Version': '202506',
+            },
+          });
+          const data = resp.data || {};
+          firstName = data.localizedFirstName || data.firstName?.localized?.en_US || '';
+          lastName = data.localizedLastName || data.lastName?.localized?.en_US || '';
+        } catch (e) {
+          console.error('Error fetching person for creative', personId, e.message);
+        }
+      }
+
+      const fullName = `${firstName} ${lastName}`.trim();
+
+      return {
+        postAuthorType: 'person',
+        postAuthorName: fullName || 'Personal profile',
+      };
+    }
+
+    // Organization author (company page post)
+    if (authorUrn.startsWith('urn:li:organization:')) {
+      const orgId = authorUrn.split(':').pop();
+      let orgName = null;
+
+      try {
+        const orgUrl = `https://api.linkedin.com/rest/organizations/${orgId}`;
+        const resp = await axios.get(orgUrl, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-RestLi-Protocol-Version': '2.0.0',
+            'LinkedIn-Version': '202506',
+          },
+        });
+        const data = resp.data || {};
+        orgName = data.localizedName || data.vanityName || data.name || null;
+      } catch (e) {
+        console.error('Error fetching organization for creative', orgId, e.message);
+      }
+
+      return {
+        postAuthorType: 'organization',
+        postAuthorName: orgName || 'Organization',
+      };
+    }
+
+    return { postAuthorType: null, postAuthorName: null };
+  } catch (e) {
+    console.error('Error building post author meta', e.message);
+    return { postAuthorType: null, postAuthorName: null };
+  }
+}
+
+// Fetch campaigns + attach creatives with author info (with boosted post enrichment)
+async function fetchAdCampaignsWithCreatives(user, accessToken, accountIds) {
+  const adCampaigns = {};
+
+  for (const rawAccountId of accountIds) {
+    const accountId = String(rawAccountId);
+    const userAdAccountID = accountId.split(':').pop();
+    const token = accessToken;
+
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      'X-RestLi-Protocol-Version': '2.0.0',
+      'LinkedIn-Version': '202506',
+    };
+
+    const campaignsApiUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/adCampaigns?q=search&sortOrder=DESCENDING`;
+
+    try {
+      const campaignsResp = await axios.get(campaignsApiUrl, { headers });
+      const campaigns = campaignsResp.data?.elements || [];
+
+      // Map campaigns by URN so we can attach creatives
+      const campaignByUrn = {};
+      for (const c of campaigns) {
+        const idStr = String(c.id);
+        const urn = `urn:li:sponsoredCampaign:${idStr}`;
+        campaignByUrn[urn] = { ...c, creatives: [] };
+      }
+
+      // If there are no campaigns, just store empty and continue
+      if (Object.keys(campaignByUrn).length === 0) {
+        adCampaigns[accountId] = { campaigns: [] };
+        continue;
+      }
+
+      // Fetch creatives for all campaigns on this account
+      try {
+        const campaignUrns = Object.keys(campaignByUrn);
+        const encodedUrns = campaignUrns.map((urn) => encodeURIComponent(urn)).join(',');
+        const creativesUrl = `https://api.linkedin.com/rest/adAccounts/${userAdAccountID}/creatives?q=criteria&campaigns=List(${encodedUrns})`;
+
+        const creativesResp = await axios.get(creativesUrl, { headers });
+        const creatives = creativesResp.data?.elements || [];
+
+        // REPLACED LOOP: Enrich creatives with post info and author meta
+        for (const creative of creatives) {
+          const campaignUrn = creative.campaign;
+          const campaignEntry = campaignByUrn[campaignUrn];
+          if (!campaignEntry) continue;
+
+          let shareCommentary = null;
+          let authorUrnFromPost = null;
+          let creativeType = null;
+
+          // If this creative is tied to a share/post, pull richer info
+          const shareRef = creative.content?.reference;
+          if (typeof shareRef === 'string' && shareRef.startsWith('urn:li:share:')) {
+            try {
+              const postsUrl = `https://api.linkedin.com/rest/posts/${encodeURIComponent(shareRef)}`;
+              const postResp = await axios.get(postsUrl, { headers });
+              const postData = postResp.data || {};
+
+              shareCommentary = postData.commentary || null;
+              authorUrnFromPost = postData.author || null;
+
+              if (authorUrnFromPost && authorUrnFromPost.startsWith('urn:li:person:')) {
+                creativeType = 'Boosted personal post';
+              } else if (authorUrnFromPost && authorUrnFromPost.startsWith('urn:li:organization:')) {
+                creativeType = 'Boosted organization post';
+              } else {
+                creativeType = 'Boosted post';
+              }
+            } catch (e) {
+              console.error('Error fetching post/share for creative', creative.id, e.message);
+            }
+          }
+
+          const authorMeta = await buildPostAuthorMeta(creative, user, token, authorUrnFromPost);
+
+          const simplifiedCreative = {
+            // Prefer commentary text from the post; fall back to creative.name
+            name: shareCommentary || creative.name || '',
+            id: creative.id,
+            content: creative.content,
+            isServing: creative.isServing,
+            postAuthorType: authorMeta.postAuthorType,
+            postAuthorName: authorMeta.postAuthorName,
+            // Extra metadata to support UX like "Boosted personal post"
+            creativeType,
+          };
+
+          campaignEntry.creatives.push(simplifiedCreative);
+        }
+        // END REPLACED LOOP
+      } catch (e) {
+        console.error('Error fetching creatives for account', accountId, e.message);
+      }
+
+      // Store campaigns (now with creatives attached) keyed by ad account ID
+      adCampaigns[accountId] = { campaigns: Object.values(campaignByUrn) };
+    } catch (e) {
+      console.error('Error fetching campaigns for account', accountId, e.message);
+      adCampaigns[accountId] = { campaigns: [] };
+    }
+  }
+
+  return adCampaigns;
+}
 // Fetch campaign groups for an ad account (mirrors fetchAdCampaigns)
 async function fetchAdCampaignGroups(user, accessToken, accountIds) {
   const adCampaignGroups = {};
@@ -930,7 +1120,7 @@ app.post('/api/check-for-changes', authenticateToken, async (req, res) => {
     }
 
     // 4) Fetch current and LinkedIn campaigns
-    const adCampaigns = await fetchAdCampaigns(user, accessToken, [adAccountIdStr]);
+    const adCampaigns = await fetchAdCampaignsWithCreatives(user, accessToken, [adAccountIdStr]);
     const currentCampaigns = await fetchCurrentCampaignsFromDB(userId, adAccountIdStr);
     const linkedInCampaigns = adCampaigns[adAccountIdStr]?.campaigns || [];
 
@@ -1681,6 +1871,56 @@ async function fetchAdCampaigns(user, accessToken, accountIds) {
                           'LinkedIn-Version': '202307',
                         },
                       });
+                      // --- Determine post author type and resolve display name ---
+                      const authorUrn = referenceResponse.data.author || referenceResponse.data.actor;
+                      creative.postAuthorType = null;
+                      creative.postAuthorName = null;
+
+                      if (authorUrn) {
+                        // Personal profile post
+                        if (authorUrn.startsWith("urn:li:person:")) {
+                          creative.postAuthorType = "person";
+                          const personId = authorUrn.split(":").pop();
+                          try {
+                            const personUrl = `https://api.linkedin.com/rest/people/(id:${personId})`;
+                            const personRes = await axios.get(personUrl, {
+                              headers: {
+                                Authorization: `Bearer ${token}`,
+                                "X-RestLi-Protocol-Version": "2.0.0",
+                                "LinkedIn-Version": "202506"
+                              }
+                            });
+                            const fn = personRes.data.firstName || "";
+                            const ln = personRes.data.lastName || "";
+                            const fullName = `${fn} ${ln}`.trim();
+                            if (fullName) {
+                              creative.postAuthorName = fullName;
+                            }
+                          } catch (e) {
+                            console.error("[fetchAdCampaigns] Failed to fetch person name:", e.response?.data || e.message);
+                          }
+                        }
+                        // Organization page post
+                        else if (authorUrn.startsWith("urn:li:organization:")) {
+                          creative.postAuthorType = "organization";
+                          const orgId = authorUrn.split(":").pop();
+                          try {
+                            const orgUrl = `https://api.linkedin.com/rest/organizations/${orgId}`;
+                            const orgRes = await axios.get(orgUrl, {
+                              headers: {
+                                Authorization: `Bearer ${token}`,
+                                "X-RestLi-Protocol-Version": "2.0.0",
+                                "LinkedIn-Version": "202506"
+                              }
+                            });
+                            if (orgRes.data.localizedName) {
+                              creative.postAuthorName = orgRes.data.localizedName;
+                            }
+                          } catch (e) {
+                            console.error("[fetchAdCampaigns] Failed to fetch organization name:", e.response?.data || e.message);
+                          }
+                        }
+                      }
                       // Use adContext.dscName, commentary, or content.article.title as fallback
                       creative.name =
                         referenceResponse.data.adContext?.dscName ||
@@ -1935,6 +2175,8 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
               creativeDiffs.push({
                 name,
                 isServing: newState ? 'Set to: true' : 'Set to: false',
+                postAuthorName: creative2.postAuthorName || null,
+                postAuthorType: creative2.postAuthorType || null,
               });
             }
 
@@ -1945,6 +2187,8 @@ const findDifferences = (obj1, obj2, urns = [], urnInfoMap = {}) => {
                   oldValue: creative1.content,
                   newValue: creative2.content,
                 },
+                postAuthorName: creative2.postAuthorName || null,
+                postAuthorType: creative2.postAuthorType || null,
               });
             }
           }

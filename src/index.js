@@ -434,13 +434,15 @@ app.use(async (req, res, next) => {
           sameSite: isProduction ? 'none' : 'lax',
           path: '/',
           maxAge: 2 * 60 * 60 * 1000, // 2h
+          ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
         });
         res.cookie('refreshToken', newRefreshToken, {
           httpOnly: true,
           secure: isProduction,
           sameSite: isProduction ? 'none' : 'lax',
           path: '/',
-          maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
+          maxAge: 30 * 24 * 60 * 60 * 1000, // 30d
+          ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
         });
 
         // So any downstream code sees the fresh token
@@ -598,7 +600,7 @@ app.get('/auth/linkedin/callback',
       const refreshTokenJwt = jwt.sign(
         { linkedinId: user.linkedinId, userId: user.userId },
         process.env.REFRESH_TOKEN_SECRET,
-        { expiresIn: '7d' }
+        { expiresIn: '30d' }
       );
       await usersCollection.updateOne({ linkedinId }, { $set: { refreshToken: refreshTokenJwt } });
 
@@ -609,13 +611,15 @@ app.get('/auth/linkedin/callback',
         sameSite: isProduction ? 'none' : 'lax',
         path: '/',
         maxAge: 2 * 60 * 60 * 1000, // 2 hours
+        ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
       });
       res.cookie('refreshToken', refreshTokenJwt, {
         httpOnly: true,
         secure: isProduction,
         sameSite: isProduction ? 'none' : 'lax',
         path: '/',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
       });
 
       // After successful login, clear invite from session so it can't be reused
@@ -668,13 +672,15 @@ const authenticateToken = async (req, res, next) => {
             sameSite: isProduction ? 'none' : 'lax',
             path: '/',
             maxAge: 2 * 60 * 60 * 1000,
+            ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
           });
           res.cookie('refreshToken', newRefreshToken, {
             httpOnly: true,
             secure: isProduction,
             sameSite: isProduction ? 'none' : 'lax',
             path: '/',
-            maxAge: 7 * 24 * 60 * 60 * 1000,
+            maxAge: 30 * 24 * 60 * 60 * 1000,
+            ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
           });
 
           // Verify the new token and continue
@@ -760,13 +766,15 @@ app.post('/api/refresh-token', async (req, res) => {
     sameSite: isProduction ? 'none' : 'lax',
     maxAge: 2 * 60 * 60 * 1000,
     path: '/',
+    ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
   });
   res.cookie('refreshToken', tokens.newRefreshToken, {
     httpOnly: true,
     secure: isProduction,
     sameSite: isProduction ? 'none' : 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: 30 * 24 * 60 * 60 * 1000,
     path: '/',
+    ...(isProduction ? { domain: '.licoricemetrics.com' } : {}),
   });
 
   // Send back the access token too in case you still want to decode it client-side
@@ -2079,7 +2087,7 @@ async function refreshUserAccessToken(refreshToken) {
     const newRefreshToken = jwt.sign(
       { userId: user.userId, linkedinId: user.linkedinId },
       process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '30d' }
     );
 
     const newAccessToken = jwt.sign(
